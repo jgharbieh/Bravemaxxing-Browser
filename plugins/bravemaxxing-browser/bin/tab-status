@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Report agent activity to the relay / claim a tab / show the registry. See scripts/tab-status.py (or run: tab-status)
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT/lib/shell.sh"
+PY="$(find_python)" || exit 1
+exec "$PY" -I "$(native "$ROOT/scripts/tab-status.py")" "$@"

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# brave-agent-ready: make sure Brave's CDP port is up and the quiet relay is running. One command, no prompt.
+#   Brave CDP (ports.upstream, default 9222)  +  cdp-quiet relay (ports.relay, default 9333)
+# After this, point agent-browser at the relay (see the README: ~/.agent-browser/config.json) and every
+# agent-browser command works without taking your focus.
+#
+# If Brave is NOT in CDP mode this does NOT restart it: a relaunch closes all Brave windows and raises the
+# new one (= takes your focus). You opt in per run:   BRAVE_RELAUNCH_OK=1 brave-agent-ready   (Windows only).
+set -u
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT/lib/shell.sh"
+
+command -v node >/dev/null 2>&1 || { echo "brave-agent-ready: Node.js not found on PATH" >&2; exit 1; }
+UPSTREAM="$(cfg ports.upstream)"; RELAY="$(cfg ports.relay)"
+# shell redirect, not `-o /dev/null`: native curl can't open /dev/null when MSYS path conversion is off
+up() { curl -s -m 0.3 "http://127.0.0.1:$1/json/version" >/dev/null; }
+
+if ! up "$UPSTREAM"; then
+  if [ "${BRAVE_RELAUNCH_OK:-}" != "1" ]; then
+    echo "Brave CDP ($UPSTREAM) is down. Not relaunching: that closes all Brave windows and takes your focus."
+    echo "Ask the human to run:  BRAVE_RELAUNCH_OK=1 brave-agent-ready"
+    echo "(or start Brave yourself with --remote-debugging-port=$UPSTREAM)"
+    exit 1
+  fi
+  if command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(native "$ROOT/scripts/brave-debug.ps1")" -Port "$UPSTREAM" || exit 1
+  else
+    echo "Automatic relaunch needs Windows PowerShell (powershell.exe not found). Quit Brave, then start it with:  brave.exe --remote-debugging-port=$UPSTREAM"
+    exit 1
+  fi
+fi
+
+if ! up "$RELAY"; then
+  if ! (cd "$ROOT" && node -e "require.resolve('ws')") >/dev/null 2>&1; then
+    echo "The relay needs the 'ws' package. Run once:  npm ci --omit=dev --prefix \"$ROOT\"" >&2; exit 1
+  fi
+  nohup node "$(native "$ROOT/relay/cdp-quiet.js")" >/dev/null 2>&1 & disown
+  for _ in $(seq 1 40); do up "$RELAY" && break; sleep 0.05; done
+fi
+
+if up "$RELAY"; then
+  echo "Brave ready (CDP $UPSTREAM, quiet relay $RELAY)."
+  grep -q "$RELAY" "$HOME/.agent-browser/config.json" 2>/dev/null \
+    || echo "hint: agent-browser is not pointed at the relay yet. Put {\"cdp\": \"$RELAY\"} in ~/.agent-browser/config.json (or pass --cdp $RELAY)."
+else
+  echo "relay failed to start (try: node \"$ROOT/relay/cdp-quiet.js\" to see the error)" >&2; exit 1
+fi

@@ -1,0 +1,7 @@
+node_modules/
+__pycache__/
+*.pyc
+# local-only working files (never published)
+BRIEF.md
+REPORT.md
+.scrub/

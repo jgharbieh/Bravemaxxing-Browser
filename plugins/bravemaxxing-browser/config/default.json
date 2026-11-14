@@ -1,0 +1,17 @@
+{
+  "ports": {
+    "upstream": 9222,
+    "relay": 9333
+  },
+  "wall": {
+    "extension_ids": ["nngceckbapebfimnlniiiahkandclblb"],
+    "domains": ["bitwarden.com", "bitwarden.eu"],
+    "keywords": ["bitwarden"]
+  },
+  "default_agent": "claude",
+  "containers": {
+    "claude": "agent-claude",
+    "hermes": "agent-hermes"
+  },
+  "brave_path": null
+}
