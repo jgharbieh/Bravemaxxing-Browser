@@ -1,12 +1,15 @@
 {
   "name": "bravemaxxing-browser",
-  "description": "Windows 10/11 only. Quiet, agent-only browser automation for your own Brave: no focus stealing, status emoji, a configurable password-manager wall.",
-  "owner": { "name": "Joseph Gharbieh", "url": "https://github.com/jgharbieh" },
+  "description": "Windows and Linux. Quiet, agent-only browser automation for your own Brave: no focus stealing, a tab group per agent, status emoji, a configurable password-manager wall.",
+  "owner": {
+    "name": "Joseph Gharbieh",
+    "url": "https://github.com/jgharbieh"
+  },
   "plugins": [
     {
       "name": "bravemaxxing-browser",
       "source": "./plugins/bravemaxxing-browser",
-      "description": "Windows 10/11 only. Quiet CDP relay, tab status emoji, password-manager wall, and skills for driving your own Brave with agent-browser."
+      "description": "Windows and Linux. Quiet CDP relay, agent tab groups, tab status emoji, password-manager wall, and skills for driving your own Brave with agent-browser."
     }
   ]
 }

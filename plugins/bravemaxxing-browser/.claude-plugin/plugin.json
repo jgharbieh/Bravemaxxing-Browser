@@ -1,11 +1,25 @@
 {
   "name": "bravemaxxing-browser",
   "displayName": "Bravemaxxing-Browser",
-  "version": "0.1.0",
-  "description": "Windows 10/11 only. Let AI agents drive your own Brave browser without stealing focus: background-only tabs, agent-only tab visibility, status emoji in tab titles, and a configurable wall around password-manager extensions and sites.",
-  "author": { "name": "Joseph Gharbieh", "url": "https://github.com/jgharbieh" },
+  "version": "0.2.0",
+  "description": "Windows and Linux. Let AI agents drive your own Brave browser without stealing focus: background-only tabs in a tab group per agent, agent-only tab visibility, status emoji in tab titles, and a configurable wall around password-manager extensions and sites.",
+  "author": {
+    "name": "Joseph Gharbieh",
+    "url": "https://github.com/jgharbieh"
+  },
   "homepage": "https://github.com/jgharbieh/Bravemaxxing-Browser",
   "repository": "https://github.com/jgharbieh/Bravemaxxing-Browser",
   "license": "MIT",
-  "keywords": ["brave", "browser", "agent-browser", "cdp", "automation", "focus", "security", "windows"]
+  "keywords": [
+    "brave",
+    "browser",
+    "agent-browser",
+    "cdp",
+    "automation",
+    "focus",
+    "security",
+    "tab-groups",
+    "windows",
+    "linux"
+  ]
 }

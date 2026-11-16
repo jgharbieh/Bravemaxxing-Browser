@@ -59,4 +59,13 @@ def brave_binary(cfg: dict):
         p = Path(r) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe"  # Windows install locations
         if p.exists():
             return str(p)
+    if os.name != "nt":  # Linux: the launcher on PATH, then the package's own path
+        import shutil
+        for name in ("brave-browser", "brave-browser-stable", "brave"):
+            found = shutil.which(name)
+            if found:
+                return found
+        p = Path("/opt/brave.com/brave/brave-browser")
+        if p.exists():
+            return str(p)
     return None

@@ -253,6 +253,66 @@ const ID = 'A'.repeat(32), ID2 = 'B'.repeat(32);
       assert.strictEqual(r.status, 5, r.stderr);
       assert.match(r.stderr, /Not launching while unsure/);
     });
+    await ok('relay: raw HTTP tab endpoints cannot raise, open or close your tabs', async () => {
+      const status = (p, method = 'GET') => new Promise((res, rej) => { const r = http.request({ host: '127.0.0.1', port: RELAY_PORT, path: p, method }, (x) => { x.resume(); x.on('end', () => res(x.statusCode)); }); r.on('error', rej); r.end(); });
+      assert.strictEqual(await status('/json/activate/' + ID), 403, 'activate takes focus, even on an agent tab');
+      assert.strictEqual(await status('/json/activate/' + MINE), 403);
+      assert.strictEqual(await status('/json/new?https://example.com', 'PUT'), 403);
+      assert.strictEqual(await status('/json/close/' + MINE), 403, "a user's tab must not be closable");
+      assert.strictEqual(await status('/json/close/' + ID), 200, 'an agent tab may be closed');
+      assert.strictEqual(await status('/json/list'), 200);
+    });
+    await ok('relay: a command that names a tab which is not an agent tab never reaches the browser', async () => {
+      const ask = async (urlPath, msg) => {
+        const ws = new WebSocketLib(`ws://127.0.0.1:${RELAY_PORT}${urlPath}`);
+        await new Promise((r) => ws.on('open', r));
+        const reply = await new Promise((res) => { ws.on('message', (m) => { const j = JSON.parse(m.toString()); if (j.id === msg.id) res(j); }); ws.send(JSON.stringify(msg)); });
+        ws.close(); return reply;
+      };
+      const before = seen.length;
+      assert.match((await ask('/agent/claude', { id: 1, method: 'Target.closeTarget', params: { targetId: MINE } })).error.message, /not an agent tab/, "a user's tab");
+      assert.match((await ask('/devtools/browser/x', { id: 2, method: 'Target.getTargetInfo', params: { targetId: MINE } })).error.message, /not an agent tab/, 'unnamed connection too');
+      assert.match((await ask('/agent/hermes', { id: 3, method: 'Target.closeTarget', params: { targetId: ID } })).error.message, /not an agent tab/, "another agent's tab");
+      assert(!seen.slice(before).some((x) => x.method === 'Target.closeTarget' || x.method === 'Target.getTargetInfo'), 'nothing was forwarded');
+      assert((await ask('/agent/claude', { id: 4, method: 'Target.getTargetInfo', params: { targetId: ID } })).result, 'its own tab still works');
+    });
+    await ok('relay: tab-group extension endpoint: its Origin only; drag in = hand over, drag out = take back; long-poll wakes on change', async () => {
+      const EXT = 'chrome-extension://' + JSON.parse(fs.readFileSync(path.join(PLUGIN, 'config', 'default.json'), 'utf8')).groups.extension_ids[0];
+      const call = (p, { headers = {}, body } = {}) => new Promise((res, rej) => {
+        const r = http.request({ host: '127.0.0.1', port: RELAY_PORT, path: p, method: body ? 'POST' : 'GET', headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...headers } },
+          (x) => { let d = ''; x.on('data', (c) => (d += c)); x.on('end', () => { let j = null; try { j = JSON.parse(d); } catch {} res({ status: x.statusCode, json: j, cors: x.headers['access-control-allow-origin'] }); }); });
+        r.on('error', rej); r.end(body ? JSON.stringify(body) : undefined);
+      });
+      const ext = { headers: { origin: EXT } };
+      const st = await call('/_ext/state', ext);
+      assert.strictEqual(st.status, 200); assert.strictEqual(st.cors, EXT); assert(st.json.rev > 0 && st.json.tabs[ID], 'state lists agent tabs');
+      assert.strictEqual(st.json.colors.hermes, 'purple');
+      assert.strictEqual((await call('/_ext/state', { headers: { origin: 'chrome-extension://' + 'a'.repeat(32) } })).status, 403, 'another extension');
+      assert.strictEqual((await call('/_ext/state', { headers: { origin: 'https://evil.example' } })).status, 403);
+      assert.strictEqual((await call('/_agent/registry', ext)).status, 403, 'the extension Origin opens /_ext/ only');
+      const X = 'D'.repeat(32);
+      assert.deepStrictEqual((await call('/_ext/event', { ...ext, body: { type: 'joined', tab: X, agent: 'hermes' } })).json, { ok: true });
+      const mid = (await get('/_agent/registry')).tabs[X];
+      assert(mid && mid.agent === 'hermes' && mid.space === 'takeover', 'dragged-in tab belongs to the agent');
+      assert.strictEqual((await call('/_ext/event', { ...ext, body: { type: 'joined', tab: ID, agent: 'hermes' } })).json.ok, false, "cannot hand over another agent's tab");
+      const rev = (await call('/_ext/state', ext)).json.rev;
+      const started = Date.now();
+      const waiting = call(`/_ext/state?wait=1&rev=${rev}`, ext);
+      await sleep(300);
+      assert.deepStrictEqual((await call('/_ext/event', { ...ext, body: { type: 'left', tab: X, agent: 'hermes' } })).json, { ok: true });
+      const woke = await waiting;
+      assert(woke.json.rev > rev && !woke.json.tabs[X] && Date.now() - started < 5000, 'long-poll answered as soon as the registry changed');
+      assert(!(await get('/_agent/registry')).tabs[X], 'dragged-out tab is yours again');
+      assert.strictEqual(spawnSync(py, ['-I', path.join(PLUGIN, 'scripts', 'tab-status.py'), 'release', '--agent', 'claude', '--tab', X, '-v'], { env, encoding: 'utf8' }).status, 0);
+    });
+    await ok('agent-tab.py: Brave is found on Linux without BRAVE_PATH (launcher on PATH)', () => {
+      if (process.platform !== 'linux') return;
+      const bin = path.join(tmp, 'fakebin'); fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, 'brave-browser'), '#!/bin/sh\n', { mode: 0o755 });
+      const code = `import sys; sys.path.insert(0, "${path.join(PLUGIN, 'lib').split(path.sep).join('/')}"); import kitconfig; print(kitconfig.brave_binary(kitconfig.load()))`;
+      const e = { ...env, BRAVE_PATH: '', PATH: bin + path.delimiter + process.env.PATH };
+      assert.strictEqual(spawnSync(py, ['-I', '-c', code], { env: e, encoding: 'utf8' }).stdout.trim(), path.join(bin, 'brave-browser'));
+    });
     await ok('agent-tab.py: an explicit BRAVE_PATH that does not exist is never second-guessed (no autodetect)', () => {
       const code = `import sys; sys.path.insert(0, "${path.join(PLUGIN, 'lib').split(path.sep).join('/')}"); import kitconfig; print(kitconfig.brave_binary(kitconfig.load()))`;
       assert.strictEqual(spawnSync(py, ['-I', '-c', code], { env, encoding: 'utf8' }).stdout.trim(), 'None');
