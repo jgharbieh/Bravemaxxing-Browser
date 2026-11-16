@@ -4,14 +4,31 @@
     "relay": 9333
   },
   "wall": {
-    "extension_ids": ["nngceckbapebfimnlniiiahkandclblb"],
-    "domains": ["bitwarden.com", "bitwarden.eu"],
-    "keywords": ["bitwarden"]
+    "extension_ids": [
+      "nngceckbapebfimnlniiiahkandclblb"
+    ],
+    "domains": [
+      "bitwarden.com",
+      "bitwarden.eu"
+    ],
+    "keywords": [
+      "bitwarden"
+    ]
   },
   "default_agent": "claude",
   "containers": {
     "claude": "agent-claude",
     "hermes": "agent-hermes"
   },
-  "brave_path": null
+  "brave_path": null,
+  "groups": {
+    "enabled": true,
+    "extension_ids": [
+      "djbahbjcpjgdbjbknmhajbdhademgamc"
+    ],
+    "colors": {
+      "claude": "orange",
+      "hermes": "purple"
+    }
+  }
 }

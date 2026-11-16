@@ -12,6 +12,7 @@ hook-style commands stay silent, claim/register/adopt print an error if the rela
   tab-status done     [--agent NAME]
   tab-status turn-end [--agent NAME]
   tab-status claim    [--agent NAME] --tab <32hex>                (take over one of YOUR tabs for the agent)
+  tab-status release  [--agent NAME] --tab <32hex>                (hand a tab back to the user)
   tab-status register [--agent NAME] --tab <32hex> --space <name> (agent-tab does this)
   tab-status adopt    [--agent NAME]                              (claim relay-created tabs from the last 60 s)
   tab-status show                                                 (print the registry)

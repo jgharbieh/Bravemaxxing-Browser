@@ -5,7 +5,7 @@
 # agent-browser command works without taking your focus.
 #
 # If Brave is NOT in CDP mode this does NOT restart it: a relaunch closes all Brave windows and raises the
-# new one (= takes your focus). You opt in per run:   BRAVE_RELAUNCH_OK=1 brave-agent-ready   (Windows only).
+# new one (= takes your focus). You opt in per run:   BRAVE_RELAUNCH_OK=1 brave-agent-ready   (Windows and Linux).
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT/lib/shell.sh"
@@ -24,8 +24,10 @@ if ! up "$UPSTREAM"; then
   fi
   if command -v powershell.exe >/dev/null 2>&1; then
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(native "$ROOT/scripts/brave-debug.ps1")" -Port "$UPSTREAM" || exit 1
+  elif [ "$(uname -s 2>/dev/null)" = "Linux" ]; then
+    bash "$ROOT/scripts/brave-debug.sh" "$UPSTREAM" || exit 1
   else
-    echo "Automatic relaunch needs Windows PowerShell (powershell.exe not found). Quit Brave, then start it with:  brave.exe --remote-debugging-port=$UPSTREAM"
+    echo "Automatic relaunch is only built for Windows and Linux. Quit Brave, then start it with --remote-debugging-port=$UPSTREAM"
     exit 1
   fi
 fi

@@ -2,7 +2,7 @@
 
 A Claude Code plugin that lets AI agents drive **your own Brave browser** without taking it over.
 
-**Windows 10/11 only.** macOS and Linux are not supported yet. PRs welcome.
+**Windows 10/11 and Linux.** macOS is not supported yet. PRs welcome.
 
 You keep working. The agent works in its own tabs, in the background, and you can see what it is doing.
 
@@ -10,30 +10,41 @@ You keep working. The agent works in its own tabs, in the background, and you ca
 
 - **No focus stealing.** A small relay sits between the agent and Brave. It drops "bring to front" and "activate tab"
   commands, opens every new tab and popup in the background, and wakes frozen (Memory Saver) tabs without switching to them.
-- **Agents only see agent tabs.** Your tabs are hidden from the agent. It cannot list, attach to, or act on them unless you
-  hand one over on purpose (`tab-status claim`). A session that names its agent (see below) sees only that agent's tabs.
+- **A tab group per agent.** Each agent's tabs sit in one tab group named after it, in your window. Collapse it and
+  they are out of your way. The group title shows what the agent is doing (🤖 working, ✅ action done, no emoji = idle).
+- **Hand a tab over by dragging it.** Drag one of your tabs into an agent's group and the agent can see and drive it.
+  Drag it out and it is yours again: the agent can no longer see it, attach to it, or close it.
+- **Agents only see agent tabs.** Your tabs are hidden from the agent. It cannot list, attach to, act on or close them
+  unless you hand one over. A session that names its agent (see below) sees only that agent's tabs.
 - **Status emoji in tab titles.** 🤖 the agent is acting now, ✅ the action finished (turn still running),
   ⏸️ the turn is over. The emoji clears after a full turn with no browser use, and survives navigation and reloads.
 - **A wall around your password manager.** A list of extension ids and domains (default: Bitwarden) the agent may never
   open, script, or autofill from. Three layers: a command hook, the relay, and a watchdog that closes any agent tab that lands there.
-- **Agent containers.** `agent-tab` opens a tab in a Brave container with its own cookies, so the agent's logins stay
-  separate from yours. A launch can take focus once; after that, new tabs open from the existing container tab in the background
-  ("open once"). `agent-tab` refuses to launch whenever it is unsure (it fails closed).
+- **Agent containers (optional).** `agent-tab` opens a tab in a Brave container with its own cookies, so the agent's logins
+  stay separate from yours. A launch can take focus once; after that, new tabs open from the existing container tab in the
+  background ("open once"). `agent-tab` refuses to launch whenever it is unsure (it fails closed).
+- **A skill that teaches driving, not a workflow.** The `agent-browser-brave` skill tells the agent how to act on pages
+  reliably and how to stay out of your way. Where it works is your call, in plain words: its own tabs, a tab you hand it,
+  or a separate hidden browser.
 
 ## Requirements
 
-- **Windows 10 or 11**
+- **Windows 10 or 11, or Linux**
 - [Brave](https://brave.com) with remote debugging available (this plugin starts from "Brave on a CDP port")
 - the [`agent-browser`](https://github.com/vercel-labs/agent-browser) CLI
 - Node.js 18 or newer
 - Python 3
 - Claude Code
-- Git Bash (Git for Windows): the plugin's `bin/` commands and the agent-name hook run in bash
+- Windows only: Git Bash (Git for Windows). The plugin's `bin/` commands and the agent-name hook run in bash.
 
-**Tested with:** Windows 11, Brave 157.x, Claude Code 2.1.x, agent-browser 0.42. Nothing else was tested.
-**macOS and Linux are not supported yet. PRs welcome.** The Brave relaunch script and the "restore your previous window" step in
-`agent-tab` are Windows-specific. Containers need a Brave build that supports the `--container=<name>` switch. Chrome, Edge,
-and other Chromium browsers were not tested and are not supported.
+**Tested with:**
+- Windows 11, Brave 157.x, Claude Code 2.1.x, agent-browser 0.42 (version 0.1.0 of this plugin).
+- Fedora Linux 45 (GNOME, Wayland), Brave 157.x, agent-browser 0.43: relay, status emoji, agent-only tabs, the Linux
+  relaunch script.
+- Tab groups: `tests/live-groups.js` against Chrome for Testing 145 (headless). Not yet run in Brave on Windows.
+
+Nothing else was tested. Containers need a Brave build that supports the `--container=<name>` switch and were not
+re-tested on Linux. Chrome, Edge, and other Chromium browsers are not supported.
 
 ## Install
 
@@ -50,8 +61,8 @@ claude plugin install bravemaxxing-browser@bravemaxxing-browser
 ```
 
 Claude Code is supposed to download the relay's one npm dependency (`ws`) when it installs from a marketplace (the plugin
-ships a `package-lock.json` for that). I could only test a local-folder install, which does not do it. If `brave-agent-ready`
-says `ws` is missing, run `npm ci --omit=dev --prefix <plugin folder>` once, as it tells you.
+ships a `package-lock.json` for that). If `brave-agent-ready` says `ws` is missing, run
+`npm ci --omit=dev --prefix <plugin folder>` once, as it tells you.
 
 **Claude Code only.** claude.ai and Cowork do not install a plugin that has a top-level `bin/` folder.
 
@@ -63,18 +74,20 @@ Then:
 
 1. **Point agent-browser at the relay.** Create `~/.agent-browser/config.json` with `{"cdp": "9333"}`. Without it,
    `agent-browser` starts its own hidden Chromium and never touches Brave.
-2. **Get Brave into CDP mode** once: start it with `--remote-debugging-port=9222`. On Windows,
-   `BRAVE_RELAUNCH_OK=1 brave-agent-ready` does that for you (see the warning below).
-3. **Start a Claude Code session and ask for browser work.** The `agent-browser-brave` skill runs `brave-agent-ready`
-   (checks Brave, starts the relay) and tells the agent the rules.
+2. **Get Brave into CDP mode** once: start it with `--remote-debugging-port=9222`.
+   `BRAVE_RELAUNCH_OK=1 brave-agent-ready` does that for you on Windows and Linux (see the warning below).
+3. **Load the tab-group extension** (optional, but it is what keeps agent tabs tidy). In Brave open `brave://extensions`,
+   turn on **Developer mode**, click **Load unpacked** and pick the plugin's `extension/` folder. It needs no setup and
+   talks only to the relay on `127.0.0.1`.
+4. **Start a Claude Code session and ask for browser work.** The `agent-browser-brave` skill runs `brave-agent-ready`
+   (checks Brave, starts the relay) and tells the agent how to drive.
 
 **Agent label (automatic).** At session start a hook writes `AGENT_BROWSER_CDP_HEADERS={"X-Agent":"claude"}` into
 `CLAUDE_ENV_FILE`, so every Bash command of the session sends that label to the relay. The relay then shows the session only
 its own agent's tabs and refuses commands on anyone else's. The name is `BRAVEMAXXING_AGENT`, else `default_agent` from the
 config (default `claude`). Your own value wins: if `AGENT_BROWSER_CDP_HEADERS` is already set (for example in your Claude Code
 `settings.json` `env` block), the hook leaves it alone.
-This needs Git Bash. Claude Code does not give `CLAUDE_ENV_FILE` to hooks that run in PowerShell, and it only applies the file
-to Bash tool commands plus PowerShell tool commands whose lines are plain assignments, so the label may be missing there. The label
+On Windows this needs Git Bash: Claude Code does not give `CLAUDE_ENV_FILE` to hooks that run in PowerShell. The label
 is optional hardening: an unnamed session still works, because the relay learns its agent from the first tab it acts on.
 Manual fallback: set `AGENT_BROWSER_CDP_HEADERS` to `{"X-Agent":"claude"}` yourself, or connect to
 `ws://127.0.0.1:9333/agent/<name>`.
@@ -86,9 +99,27 @@ the plugin hook is not active.
 Commands the plugin puts on `PATH` for Claude's Bash tool: `brave-agent-ready`, `agent-tab`, `tab-status`.
 Skills: `/bravemaxxing-browser:agent-browser-brave`, `/bravemaxxing-browser:brave-agent-ready`, `/bravemaxxing-browser:agent-tab`.
 
-> **Warning: the relaunch.** `BRAVE_RELAUNCH_OK=1 brave-agent-ready` force-closes **every** Brave window, edits the
-> `exit_type` field in each profile's `Preferences` file so Brave does not show a crash popup, and relaunches with your tabs
-> restored. The new window takes focus. Without the variable, `brave-agent-ready` never restarts anything. Agents should never set it.
+> **Warning: the relaunch.** `BRAVE_RELAUNCH_OK=1 brave-agent-ready` closes **every** Brave window and relaunches Brave with
+> your tabs restored. The new window takes focus. Without the variable, `brave-agent-ready` never restarts anything. Agents
+> should never set it.
+> On Windows it force-closes Brave and edits the `exit_type` field in each profile's `Preferences` file so Brave does not show
+> a crash popup. On Linux it asks Brave to quit normally, edits nothing, and gives up without relaunching if Brave has not
+> quit within 10 seconds.
+
+## Tab groups
+
+With the extension loaded, the relay's list of agent tabs is mirrored into tab groups:
+
+- A tab an agent opens joins the group named after the agent (one group per agent per window). It is never activated.
+- **You drag a tab into the group:** it is handed to that agent. A tab on your wall list is refused and drops back out.
+- **You drag a tab out of the group:** you took it back. The same happens from the command line with
+  `tab-status release --tab <id>`; `tab-status claim --tab <id>` is the command-line way to hand one over.
+- When the agent's last tab closes, the group goes with it. After a Brave restart, leftover agent groups are dissolved
+  (the tabs stay; they are just no longer agent tabs).
+
+The extension recognises its own groups by an invisible marker in the title, never by name, so a group you name
+"Claude" yourself is left alone. It asks for the `debugger` permission for one read-only call that maps a tab to the id
+the relay knows it by; it never attaches to a tab. Turn the whole feature off with `"groups": {"enabled": false}`.
 
 ## Configure
 
@@ -106,7 +137,12 @@ default Bitwarden entry.
   },
   "default_agent": "claude",
   "containers": { "claude": "agent-claude", "hermes": "agent-hermes" },
-  "brave_path": null
+  "brave_path": null,
+  "groups": {
+    "enabled": true,
+    "extension_ids": ["djbahbjcpjgdbjbknmhajbdhademgamc"],
+    "colors": { "claude": "orange", "hermes": "purple" }
+  }
 }
 ```
 
@@ -120,6 +156,12 @@ default Bitwarden entry.
 | `default_agent` | Owner name for tabs when `--agent` is not given. |
 | `containers` | Agent name to Brave container name. Any other agent gets `agent-<name>`. |
 | `brave_path` | Path to the Brave binary. `BRAVE_PATH` overrides it; otherwise standard install paths are tried. |
+| `groups.enabled` | `false` turns tab groups off. |
+| `groups.extension_ids` | Extension ids allowed to talk to the relay's `/_ext/` endpoint. The shipped extension has a fixed id. |
+| `groups.colors` | Agent name to tab-group colour (`grey`, `blue`, `red`, `yellow`, `green`, `pink`, `purple`, `cyan`, `orange`). Others get one picked from the name. |
+
+If the relay runs on another port, tell the extension: on its service-worker console run
+`chrome.storage.local.set({ port: <relay port> })`.
 
 The relay refuses to start if your config file is invalid JSON, so a typo can never silently drop the wall.
 
@@ -127,8 +169,8 @@ Environment variables (names only):
 
 | Variable | Used by | Purpose |
 |---|---|---|
-| `BRAVE_PATH` | `agent-tab`, `brave-debug.ps1` | Brave binary |
-| `BRAVE_RELAUNCH_OK` | `brave-agent-ready` | Set to `1` to allow the Windows relaunch |
+| `BRAVE_PATH` | `agent-tab`, `brave-debug.ps1`, `brave-debug.sh` | Brave binary |
+| `BRAVE_RELAUNCH_OK` | `brave-agent-ready` | Set to `1` to allow the relaunch |
 | `BRAVEMAXXING_CONFIG` | all | Config file path |
 | `BRAVEMAXXING_STATE` | relay | State folder (default `~/.bravemaxxing/state`: `registry.json`, `wall.log`) |
 | `BRAVEMAXXING_AGENT` | hook, Hermes extra | Agent name the hook reports as and labels the session with (default: config `default_agent`, i.e. `claude`; Hermes extra: `hermes`) |
@@ -142,12 +184,14 @@ To prove the wall works without touching a real site, use the built-in test sent
 
 ```text
 agent-browser ──► relay :9333 ──► Brave :9222
-                    │
+                    │   ▲
+                    │   └── tab-group extension (long-poll /_ext/state, reports your drags)
                     ├─ drops bringToFront / activateTarget, forces background tabs
-                    ├─ hides non-agent tabs, attach only to tabs in the registry
+                    ├─ hides non-agent tabs; commands that name a non-agent tab never reach Brave
                     ├─ refuses navigate/eval toward walled ids and domains
                     ├─ keeps 🤖 / ✅ / ⏸️ in agent tab titles (injected keeper script)
-                    └─ closes agent tabs that land on a walled site (watchdog)
+                    ├─ closes agent tabs that land on a walled site (watchdog)
+                    └─ closes blank tabs a finished session left behind
 
 Claude Code hooks (SessionStart / PreToolUse / PostToolUse / Stop)
    session-start  write the agent label (X-Agent) into CLAUDE_ENV_FILE
@@ -156,10 +200,16 @@ Claude Code hooks (SessionStart / PreToolUse / PostToolUse / Stop)
    stop  status "turn-end"
 ```
 
-- **Local only.** The relay answers only requests whose `Host` is `127.0.0.1:<port>` or `localhost:<port>` and which carry no
-  browser `Origin` header, so a web page in your browser cannot talk to it. Status writes must be `application/json`.
+- **Local only.** The relay answers only requests whose `Host` is `127.0.0.1:<port>` or `localhost:<port>`. A request that
+  carries a browser `Origin` is refused, so a web page in your browser cannot talk to it. The one exception is the
+  tab-group extension's own origin, and only on `/_ext/`. Status writes must be `application/json`.
+- **Default deny.** An agent can attach only to tabs in the registry, and any command that names another tab
+  (`Target.closeTarget`, a session on a tab that was handed back, and so on) is answered with an error by the relay.
+  Brave's plain-HTTP tab endpoints are covered too: `/json/activate` and `/json/new` are always refused (they take focus),
+  `/json/close` only works on an agent tab.
 - **Registry.** The relay owns a registry of agent tabs (`registry.json` in the state folder). A tab joins it when the agent
-  creates it through the relay, when `agent-tab` registers it, or when you run `tab-status claim --tab <id>`.
+  creates it through the relay, when `agent-tab` registers it, when you drag it into an agent's group, or when you run
+  `tab-status claim --tab <id>`. It leaves when it closes, when you drag it out, or with `tab-status release --tab <id>`.
 - **Status.** The hook posts status to the relay (`/_agent/status`); `tab-status` is the same call from the command line.
 - **Open once.** `agent-tab` finds an existing tab of the same agent in the same container and asks the relay to open the URL
   from it (a trusted Ctrl+Enter on a temporary link = Brave's own "open in background tab": same container, same owner, no
@@ -173,22 +223,26 @@ Claude Code hooks (SessionStart / PreToolUse / PostToolUse / Stop)
 - **Native browser dialogs** (alert/confirm/prompt, file pickers, permission prompts, OS dialogs) are not handled and can
   block a tab until you dismiss them.
 - **Container tabs and popups.** Tabs opened from a container tab use a trusted Ctrl+Enter on a temporary link so Brave keeps them in the container;
-  `same_partition` in `agent-tab`'s output reports whether the new tab really shares the cookie jar. This is the newest and
-  least exercised part of the relay: I only ran it on the one Brave build above. If new tabs land outside the container,
-  look here first.
+  `same_partition` in `agent-tab`'s output reports whether the new tab really shares the cookie jar. This is the least
+  exercised part of the relay: it was only run on one Brave build on Windows. If new tabs land outside the container, look here first.
+- **Tab groups need the extension**, and a pinned tab cannot be in a group, so a pinned tab you hand over with
+  `tab-status claim` stays where it is.
 - **No separate-profile mode.** Opening a tab in another Brave profile means a new window, which takes focus, so it is left out.
-- **`bin/` commands are bash scripts.** They work from Claude's Bash tool (Git Bash), not from PowerShell.
-- **Takeover needs the tab id.** `curl -s http://127.0.0.1:9333/json/list` lists tab ids; the list is not filtered.
+- **`bin/` commands are bash scripts.** On Windows they work from Claude's Bash tool (Git Bash), not from PowerShell.
+- **Command-line takeover needs the tab id.** `curl -s http://127.0.0.1:9333/json/list` lists tab ids; the list is not filtered.
 - A closed tab leaves the registry. When the relay restarts, entries for tabs that no longer exist are dropped and the rest are re-attached.
-- Tested with agent-browser 0.42; newer releases were not tested.
+- The relaunch is the only way this plugin turns Brave's CDP port on. After a reboot, or after you start Brave yourself,
+  the port is off again until you relaunch.
 
 ## Test
 
 ```bash
 node tests/smoke.js
+CHROME_BIN=/path/to/chrome node tests/live-groups.js     # optional: tab groups in a real, throwaway Chromium
 ```
 
-Runs on spare ports (19333, 19222) with a temp state folder and a fake CDP upstream. It never touches your Brave or a running relay.
+`smoke.js` runs on spare ports (19333, 19222) with a temp state folder and a fake CDP upstream. `live-groups.js` starts a
+headless Chromium with a temp profile and loads the extension into it. Neither touches your Brave or a running relay.
 
 ## Hermes Agent
 
@@ -202,9 +256,10 @@ claude plugin uninstall bravemaxxing-browser@bravemaxxing-browser
 claude plugin marketplace remove bravemaxxing-browser
 ```
 
-Then stop the relay (it is a plain `node .../relay/cdp-quiet.js` process; end it in your task manager or with `kill`) and delete
-`~/.bravemaxxing/` if you want the state and config gone. Remove `~/.agent-browser/config.json`'s `cdp` line if you added it.
-Brave itself is never modified, except by the optional relaunch script's Preferences edit described above.
+Then stop the relay (it is a plain `node .../relay/cdp-quiet.js` process; end it in your task manager or with `kill`), remove
+the extension on `brave://extensions`, and delete `~/.bravemaxxing/` if you want the state and config gone. Remove
+`~/.agent-browser/config.json`'s `cdp` line if you added it. Brave itself is never modified, except by the Windows relaunch
+script's Preferences edit described above.
 
 ## Credits
 

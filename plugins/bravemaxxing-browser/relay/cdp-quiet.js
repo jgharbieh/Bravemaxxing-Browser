@@ -61,7 +61,11 @@ function wallLog(entry) {
 let reg = { tabs: {}, agents: {} };
 try { reg = { tabs: {}, agents: {}, ...JSON.parse(fs.readFileSync(REG_FILE, 'utf8')) }; } catch {}
 let saveTimer = null;
+let rev = 1;                 // bumped on every registry change
+const waiters = new Set();   // long-poll callbacks of the tab-group extension (/_ext/state?wait=1)
 function save() {
+  rev++;
+  for (const w of [...waiters]) w();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { try { fs.writeFileSync(REG_FILE, JSON.stringify(reg, null, 1)); } catch {} }, 200);
 }
@@ -137,6 +141,15 @@ function control(body) {
       if (!t || t.agent !== agent) return { ok: false, error: 'tab is not yours' };
       if (!/^https?:\/\//i.test(body.url || '') || FORBIDDEN.test(body.url)) return { ok: false, error: 'url not allowed' };
       keeper.openIn(tab, body.url);
+      return { ok: true };
+    }
+    case 'release': { // hand a tab back to you: the agent can no longer see or drive it
+      const t = reg.tabs[tab];
+      if (!t) return { ok: true };
+      if (t.agent !== agent && t.agent !== UNOWNED) return { ok: false, error: `tab owned by ${t.agent}` };
+      keeper.release(tab);
+      delete reg.tabs[tab];
+      save();
       return { ok: true };
     }
     case 'partition': // {tab, other}: same storage partition (= same container)? Read-only, no focus.
@@ -291,7 +304,29 @@ const keeper = {
     return { ok: true, same };
   },
   async wake(id) { const sid = this.sessions.get(id) || await this.attach(id); if (sid) await this.send('Page.setWebLifecycleState', { state: 'active' }, sid); },
-  forget(id) { this.sessions.delete(id); this.scripts.delete(id); this.urls.delete(id); },
+  forget(id) { this.sessions.delete(id); this.scripts.delete(id); },
+  async release(id) { // undo what attach/apply did: no emoji, no in-page hooks on the next document, no session
+    const sid = this.sessions.get(id);
+    if (sid) {
+      const old = this.scripts.get(id);
+      if (old) await this.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: old }, sid);
+      await this.send('Runtime.evaluate', { expression: "window.__agentTabStatus='';window.__agentOpenHooked=0;window.__agentTabApply&&window.__agentTabApply()" }, sid);
+      await this.send('Runtime.removeBinding', { name: '__agentOpen_' + id }, sid);
+      await this.send('Target.detachFromTarget', { sessionId: sid });
+    }
+    this.forget(id);
+  },
+  // agent-browser opens an about:blank tab when it connects and cannot close its last tab, so every ended
+  // session would leave one behind. Close agent tabs that are still blank, unused and a minute old.
+  sweep() {
+    const now = Date.now();
+    for (const [id, t] of Object.entries(reg.tabs)) {
+      const url = this.urls.get(id) || '';
+      if ((url === 'about:blank' || url === '') && now - (t.created || now) > 60000 && !(liveAttach.get(id) || new Set()).size) {
+        this.send('Target.closeTarget', { targetId: id });
+      }
+    }
+  },
   onTarget(info, created) {
     if (info.type !== 'page') return;
     const id = info.targetId;
@@ -348,7 +383,7 @@ const keeper = {
           if (m.method === 'Target.targetCreated') this.onTarget(m.params.targetInfo, true);
           else if (m.method === 'Target.targetInfoChanged') this.onTarget(m.params.targetInfo, false);
           else if (m.method === 'Target.targetDestroyed') {
-            const id = m.params.targetId; this.forget(id);
+            const id = m.params.targetId; this.forget(id); this.urls.delete(id);
             if (reg.tabs[id]) { delete reg.tabs[id]; save(); }
           } else if (m.method === 'Target.detachedFromTarget') {
             for (const [id, sid] of this.sessions) if (sid === m.params.sessionId) this.forget(id);
@@ -368,9 +403,50 @@ const keeper = {
 // exact loopback Host (blocks DNS rebinding) and no Origin header on WebSocket upgrades (CDP clients send none).
 const HOST_OK = new Set([`127.0.0.1:${LISTEN}`, `localhost:${LISTEN}`]);
 const trusted = (req) => HOST_OK.has(String(req.headers.host || '').toLowerCase());
+// The one browser Origin that is let in, and only on /_ext/: the kit's own tab-group extension (config groups.extension_ids).
+const GROUPS = CFG.groups || {};
+const EXT_ORIGINS = new Set((Array.isArray(GROUPS.extension_ids) ? GROUPS.extension_ids : []).map((id) => `chrome-extension://${id}`));
+const liveAttach = new Map(); // targetId -> Set(connection ids) with a live session on it
+function extState() {
+  const tabs = {};
+  for (const [id, t] of Object.entries(reg.tabs)) tabs[id] = { agent: t.agent, space: t.space, status: t.status };
+  return { rev, enabled: GROUPS.enabled !== false, tabs, agents: reg.agents, colors: GROUPS.colors || {} };
+}
+function extEvent(body) { // the user moved a tab into / out of an agent's tab group
+  const { type, tab, agent } = body || {};
+  if (type === 'joined') {
+    if (FORBIDDEN.test(keeper.urls.get(tab) || '')) return { ok: false, error: 'that site is on your wall list' };
+    return control({ cmd: 'claim', agent, tab });
+  }
+  if (type === 'left') return control({ cmd: 'release', agent, tab });
+  return { ok: false, error: 'unknown event' };
+}
 const server = http.createServer((req, res) => {
-  if (!trusted(req) || req.headers.origin) { res.writeHead(403); return res.end('forbidden'); }
+  const origin = req.headers.origin;
+  const isExt = req.url.startsWith('/_ext/');
+  if (!trusted(req) || (origin && !(isExt && EXT_ORIGINS.has(origin)))) { res.writeHead(403); return res.end('forbidden'); }
   log('HTTP', req.method, req.url);
+  if (isExt) {
+    const cors = origin ? { 'access-control-allow-origin': origin, 'access-control-allow-headers': 'content-type', 'access-control-allow-methods': 'GET, POST' } : {};
+    const reply = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json', ...cors }); res.end(JSON.stringify(obj)); };
+    if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
+    const u = new URL(req.url, 'http://x');
+    if (req.method === 'GET' && u.pathname === '/_ext/state') {
+      if (u.searchParams.get('wait') !== '1' || Number(u.searchParams.get('rev')) !== rev) return reply(200, extState());
+      let done = false;
+      const finish = () => { if (done) return; done = true; waiters.delete(finish); clearTimeout(timer); reply(200, extState()); };
+      const timer = setTimeout(finish, 20000);
+      waiters.add(finish);
+      req.on('close', () => { if (!done) { done = true; waiters.delete(finish); clearTimeout(timer); } });
+      return;
+    }
+    if (req.method === 'POST' && u.pathname === '/_ext/event') {
+      let b = ''; req.on('data', (c) => { b += c; if (b.length > 10000) req.destroy(); });
+      req.on('end', () => { let body; try { body = JSON.parse(b); } catch { return reply(400, { ok: false, error: 'bad json' }); } reply(200, extEvent(body)); });
+      return;
+    }
+    return reply(404, { ok: false });
+  }
   if (req.url.startsWith('/_agent/')) {
     const reply = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
     if (req.method === 'GET' && req.url === '/_agent/registry') return reply(200, reg);
@@ -381,6 +457,17 @@ const server = http.createServer((req, res) => {
       return;
     }
     return reply(404, { ok: false });
+  }
+  // Brave's plain-HTTP tab endpoints skip every WebSocket rule below, so they are refused here:
+  // /json/activate raises a tab (focus), /json/new opens a FOREGROUND tab, /json/close can close a tab of yours.
+  const act = req.url.match(/^\/json\/(activate|close|new)(?:\/([^/?]+))?/i);
+  if (act) {
+    const kind = act[1].toLowerCase();
+    if (kind !== 'close' || !reg.tabs[act[2] || '']) {
+      wallLog({ layer: 2, action: 'refused-http', kind, tab: act[2] || '' });
+      res.writeHead(403, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: kind === 'close' ? 'agent wall: not an agent tab' : `agent wall: /json/${kind} takes focus; use the CDP websocket (Target.createTarget) through this relay` }));
+    }
   }
   const up = http.request({ host: '127.0.0.1', port: UPSTREAM, path: req.url, method: req.method, headers: req.headers }, (ur) => {
     const chunks = [];
@@ -445,7 +532,11 @@ server.on('upgrade', (req, socket, head) => {
         try {
           const m = JSON.parse(data.toString('utf8'));
           if (m.id && attachReq.has(m.id)) {
-            if (m.result && m.result.sessionId) sessionTarget.set(m.result.sessionId, attachReq.get(m.id));
+            if (m.result && m.result.sessionId) {
+              const tid = attachReq.get(m.id);
+              sessionTarget.set(m.result.sessionId, tid);
+              (liveAttach.get(tid) || liveAttach.set(tid, new Set()).get(tid)).add(connId);
+            }
             attachReq.delete(m.id);
           } else if (m.id && createReq.has(m.id)) {
             createReq.delete(m.id);
@@ -483,6 +574,20 @@ server.on('upgrade', (req, socket, head) => {
             if (!own || walled) {
               if (walled) wallLog({ layer: 2, action: 'refused-attach', agent: connAgent.name });
               return reply({ error: { code: -32000, message: 'agent wall: not an agent tab. Open your own (agent-browser tab new <url>) or claim it first (tab-status claim)' } });
+            }
+          }
+          // Default deny for everything else that names a tab: a command addressed to a tab that is not an
+          // agent tab (yours, or one you took back) never reaches the browser. This is what stops a stale or
+          // empty tab id from closing or driving one of your tabs.
+          if (msg.method !== 'Target.attachToTarget') {
+            const named = (msg.params || {}).targetId;
+            const viaSession = msg.sessionId ? sessionTarget.get(msg.sessionId) : pageConn;
+            for (const tid of [named, viaSession]) {
+              if (typeof tid !== 'string' || !/^[0-9A-F]{32}$/i.test(tid)) continue;
+              const t = reg.tabs[tid];
+              if (!t || (connAgent.fixed && t.agent !== connAgent.name && t.agent !== UNOWNED)) {
+                return reply({ error: { code: -32000, message: 'agent wall: not an agent tab (it is yours, or it was handed back). Open your own tab or ask for it' } });
+              }
             }
           }
           if (WALLED_METHODS.has(msg.method) && FORBIDDEN.test(JSON.stringify(msg.params || {}))) {
@@ -523,11 +628,11 @@ server.on('upgrade', (req, socket, head) => {
       }
       if (upstream.readyState === 1) upstream.send(out, { binary: isBinary }); else queue.push([out, isBinary]);
     });
-    const closeBoth = () => { try { client.close(); } catch {} try { upstream.close(); } catch {} };
+    const closeBoth = () => { for (const set of liveAttach.values()) set.delete(connId); try { client.close(); } catch {} try { upstream.close(); } catch {} };
     client.on('close', closeBoth); upstream.on('close', closeBoth);
     client.on('error', (e) => { log('client err', e.message); closeBoth(); });
     upstream.on('error', (e) => { log('upstream err', e.message); closeBoth(); });
   });
 });
 
-server.listen(LISTEN, '127.0.0.1', () => { console.log(`cdp-quiet ${LISTEN} -> ${UPSTREAM}`); keeper.connect(); });
+server.listen(LISTEN, '127.0.0.1', () => { console.log(`cdp-quiet ${LISTEN} -> ${UPSTREAM}`); keeper.connect(); setInterval(() => keeper.sweep(), 30000).unref(); });

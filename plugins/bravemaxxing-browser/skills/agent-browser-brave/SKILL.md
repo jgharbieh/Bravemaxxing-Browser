@@ -1,92 +1,116 @@
 ---
 name: agent-browser-brave
-description: Drive the user's own visible Brave browser with the agent-browser CLI through the quiet relay, so automation never steals focus and never touches the user's tabs. Use when asked to browse, click, fill forms, scrape, screenshot or test a web app in the user's real browser, or "watch it happen".
+description: How to drive the user's own Brave browser well with the agent-browser CLI: where to work (your own tab group, a tab the user hands you, or a separate hidden browser), how to act on pages reliably (snapshot, click, type, hover, drag, double-click), and how to stay out of the user's way. Use for any browsing, form filling, scraping, testing or "watch it happen" request.
 allowed-tools: Bash(agent-browser:*), Bash(brave-agent-ready:*), Bash(agent-tab:*), Bash(tab-status:*), Bash(curl -s http://127.0.0.1:9333/json/list)
 ---
 
-# agent-browser on your own Brave
+# Driving Brave
 
-`agent-browser` drives a real, visible Brave through the Chrome DevTools Protocol (CDP). This skill sets it up
-so that the agent works in **its own tabs**, in the **background**, with a **status emoji** in each tab title,
-and with a **wall** around the password manager. The user keeps working in their own tabs and sees nothing jump.
+You drive the user's real Brave with the `agent-browser` CLI. A small relay sits between you and Brave so
+that nothing you do takes their focus, and so that you only ever see tabs that are yours. The user decides
+where you work, in plain words. Your job is to drive well.
 
-Requirements: Brave, the `agent-browser` CLI, Node.js, Python 3. Run commands from the Bash tool.
-
-## Step 1: make sure Brave and the relay are up
+## 1. Start
 
 ```bash
-brave-agent-ready
+brave-agent-ready                                     # checks Brave and the relay; prints "Brave ready"
+export AGENT_BROWSER_CDP_HEADERS='{"X-Agent":"<your agent name>"}'   # once per shell, if not already set
 ```
 
-- Brave CDP already on (default port 9222): reuses it, starts the relay if it is not running (about 0.1 s).
-- Brave not in CDP mode: it stops and tells you what to ask the user. **Never relaunch Brave yourself.** A relaunch
-  closes every Brave window and takes focus. The user opts in by running `BRAVE_RELAUNCH_OK=1 brave-agent-ready` (Windows).
-- If it prints a hint about `~/.agent-browser/config.json`, tell the user to add `{"cdp": "9333"}` (the relay port).
-  Without it, `agent-browser` starts its own hidden Chromium instead of using Brave.
+Use one session name for your work: `agent-browser --session <your agent name> <command>`.
+If `brave-agent-ready` says Brave's debugging port is down, do not restart Brave: tell the user to run
+`BRAVE_RELAUNCH_OK=1 brave-agent-ready` (it closes and restores their windows, so it is their call).
 
-## Step 2: use plain agent-browser, always through the relay
+## 2. Where to work: follow what the user said
 
-Never pass `--cdp 9222` (Brave's raw port). The hook denies it: it skips the focus rule and the wall.
-
-What the relay does for you, with nothing to add:
-- `Page.bringToFront` / `Target.activateTarget` are dropped; frozen (Memory Saver) tabs are woken without activation.
-- New tabs and popups open in the background.
-- **Agents only see agent-owned tabs.** `agent-browser tab` lists only yours; a session can never land on the user's tab.
-- **Identity (optional hardening).** If `AGENT_BROWSER_CDP_HEADERS='{"X-Agent":"claude"}'` is set (Claude Code's
-  `settings.json` `env` block is the easy place), the relay shows that session ONLY the tabs of agent `claude` and refuses
-  commands on any other agent's tabs. Without it, the session learns its agent from the first tab it acts on.
-- The tab title carries a status emoji: 🤖 acting now, ✅ action done (turn still running), ⏸️ turn over. It is
-  cleared after one full turn with no browser use. Do not set titles by hand.
-
-## Step 3: pick your tab lane
-
-| Task | Do this |
+| The user says | Do this |
 |---|---|
-| Independent task ("go scrape X", "test this flow") | Open **your own** tab: `agent-tab <url>` (container, keeps logins) or `agent-browser tab new <url>` (plain background tab). |
-| "Take over this / look at my screen / fill the form I have open" | Takeover (explicit asks only), see below. |
-| Unclear which one | Ask one short question: "Your current tab, or my own?" |
+| Nothing about where ("look this up", "apply here", "test this flow") | Your own tabs. They appear in a tab group with your name in the user's window. |
+| "In my tab", "this page", "the form I have open", "take over" | That tab, once it is yours (see below). |
+| "Use a separate browser", "don't touch my Brave", or bulk scraping that needs no login | The separate hidden browser (section 6). |
 
-**Own-lane (default).** Work only in tabs you created. If the user opens a tab, never drive it. After any
-`agent-browser tab <id>` bind, run `agent-browser get url` and abort if it is not the page you expect: a failed bind
-silently leaves the session on whatever tab it held before.
+Say in one line which one you are using. Do not ask unless the choice changes the result.
 
-**Takeover (explicit only).**
-1. Say one line: "Taking over your tab (<title>)."
-2. Find its id: `curl -s http://127.0.0.1:9333/json/list` (page entries, 32-hex `id`).
-3. Claim it so the relay lets you see and drive it: `tab-status claim --tab <id>`
-4. `agent-browser tab <id>`, then `agent-browser get url` to confirm.
-5. When done: "Done, your tab is yours." Do not touch it again unless re-pointed at it.
+**Your own tabs.** Open the first page with `agent-browser --session <name> open <url>` (it uses the blank tab
+the session starts with). Open more with `tab new <url>`. They open in the background and join your tab group.
 
-## Everyday commands
+**A tab of the user's.** You cannot see the user's tabs until one is handed to you. Two ways:
+- They drag the tab into your tab group. It then shows up in `agent-browser --session <name> tab`.
+- They tell you to take it. Find its id with `curl -s http://127.0.0.1:9333/json/list` (match the title or
+  URL they named), then `tab-status claim --agent <name> --tab <id>`.
+
+Bind with `agent-browser --session <name> tab <id>` and confirm with `get url` before you act.
+When they drag it out of the group, or you run `tab-status release --agent <name> --tab <id>`, it is theirs
+again and you can no longer see it. Give a tab back when you are done with it.
+
+## 3. The loop that works
 
 ```bash
-agent-browser snapshot -i            # interactive elements with @eN refs
-agent-browser click @e3
-agent-browser fill @e2 "text"
-agent-browser screenshot out.png
+agent-browser --session <name> snapshot -i        # interactive elements, each with a ref like @e3
+agent-browser --session <name> click @e3          # act by ref
+agent-browser --session <name> snapshot -i        # look again before the next step
 ```
 
-The CLI ships its own up-to-date reference: `agent-browser skills get core` (add `--full` for everything).
+- Refs belong to the snapshot they came from. After anything that changes the page, snapshot again.
+- Check that an action landed (new URL, new text, field value) before you build on it. If you are unsure
+  whether a click or submit went through, read the page; do not repeat it.
+- Wait for the page, not for a timer: `wait --text "..."`, `wait <selector>`, `wait --load networkidle`.
+- Read with `get text <sel>`, `get value <sel>`, `get url`, `get title`. Screenshot only when layout matters.
+
+| Need | Command |
+|---|---|
+| Type into a field | `fill @e2 "text"` (replaces), `type @e2 "text"` (appends) |
+| Keys | `press Enter`, `press Control+a` |
+| Hover (menus, tooltips) | `hover @e4` |
+| Double-click | `dblclick @e4` |
+| Drag and drop | `drag @e5 @e9` |
+| Dropdown, checkbox | `select @e6 "Option"`, `check @e7`, `uncheck @e7` |
+| Scroll | `scroll down 600`, `scrollintoview @e8` |
+| Upload a file | `upload <sel> /absolute/path` (never click a button that opens the system file picker) |
+
+A ref or a CSS selector (`"#id"`, `".class"`) both work. The CLI's own reference is always current:
+`agent-browser skills get core`.
+
+## 4. Being a good guest in someone's browser
+
+- **Never take focus.** There is no "bring to front" step. If you need the user, say so in chat and name the
+  tab by its title. The status emoji in the title (🤖 acting, ✅ action done, ⏸️ turn over) shows them the rest.
+- **Keep your group small.** Reuse a tab with `open <url>` instead of opening another. Close each tab when you
+  are done with it (`tab` lists them, `tab close <tN>`). End a task with only the tabs the user needs to see.
+- **Only your tabs.** After every `tab <id>` and after anything that opens a tab, run `get url` and check it
+  is the page you expect. If it is not, stop and rebind; do not act.
+- **Leave their things alone.** Never set tab titles by hand, never move or rename tab groups, never open
+  the password manager or click its pop-ups. The user signs in by hand; you reuse the session.
+- **Stop at bot checks.** CAPTCHA or "verify you are human": stop on that site and tell the user. Never solve
+  or work around one.
+
+## 5. When something is in the way
+
+| What you see | What to do |
+|---|---|
+| `Session with given id not found`, `Page.enable` errors | `agent-browser --session <name> close`, then run the command again. |
+| `agent wall: not an agent tab` | The tab is not yours (or was taken back). Open your own or ask for it. |
+| `blocked by agent wall` | That site or extension is on the user's wall list. Do not look for another way in. |
+| A browser dialog (alert, print, file picker, permission prompt) | The relay cannot answer it. Tell the user which tab; do not retry. |
+| The page went blank or reloaded after a pause | Brave put the background tab to sleep. Check `get url` and the page state, then continue. |
+| `brave-agent-ready` fails | Read its message. It names the fix. |
+
+Never connect to Brave's own debugging port (9222). The relay (9333, the default) is the only way in.
+
+## 6. The separate hidden browser
+
+For work that should not touch the user's Brave at all:
+
+```bash
+agent-browser --config ~/.bravemaxxing/agent-browser-headless.json --session <name>-sep open <url>
+```
+
+It is a clean browser with no logins, invisible unless you add `--headed`. Everything in section 3 works the
+same. If the config file does not exist yet, create it once with the content `{}` (an empty config makes
+`agent-browser` start its own browser instead of using the relay). Close it when done: `agent-browser --config ~/.bravemaxxing/agent-browser-headless.json --session <name>-sep close`.
 
 ## The wall
 
-The user lists walled extensions and sites in `~/.bravemaxxing/config.json` (default: Bitwarden's extension and vault
-domains). Three layers enforce it:
-1. A hook denies `agent-browser` / `agent-tab` commands (tool name in command position) that name a walled extension id or
-   keyword, and any raw-port `--cdp` use.
-2. The relay refuses CDP navigate/eval toward walled ids and domains, and refuses attach to a walled tab.
-3. The relay closes any agent-owned tab whose URL lands on a walled site (log: `wall.log` in the state dir).
-
-Never open, script, or click the autofill pop-up of a walled extension. The user signs in by hand; you reuse the
-session. The wall is a tripwire for cooperating agents, not a security boundary.
-
-## Pitfalls
-
-1. Bind, then verify (`get url`) before acting. agent-browser also auto-follows a newly opened tab: re-bind and check
-   `get url` after anything that opens one.
-2. Plain `agent-browser open <url>` with no relay config launches a hidden Chromium the user cannot see.
-3. `agent-browser close --all` only closes agent-browser's own sessions, not Brave.
-4. Native browser dialogs (alert/confirm/prompt, file pickers, permission prompts) are not handled by the relay and
-   can block a tab. Tell the user instead of retrying.
-5. After Brave restarts, CDP drops: run `brave-agent-ready` again.
-6. Bot checks (CAPTCHA, "verify you are human"): stop and tell the user. Never try to solve them.
+The user lists walled extensions and sites in `~/.bravemaxxing/config.json` (default: their password manager).
+A hook refuses commands that name them, the relay refuses to navigate to or script them, and any tab of
+yours that lands on one is closed. It is a tripwire for cooperating agents, not a security boundary.

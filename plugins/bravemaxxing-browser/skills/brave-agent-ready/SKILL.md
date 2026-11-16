@@ -27,10 +27,10 @@ Do not restart Brave yourself. A restart closes every Brave window, rewrites eac
 the new window, which takes the user's focus. Tell the user to run this themselves:
 
 ```bash
-BRAVE_RELAUNCH_OK=1 brave-agent-ready      # Windows: relaunches Brave with CDP on and tabs restored
+BRAVE_RELAUNCH_OK=1 brave-agent-ready      # Windows and Linux: relaunches Brave with CDP on and tabs restored
 ```
 
-Without it, the user can also start Brave once by hand with `--remote-debugging-port=9222`. This plugin supports Windows only.
+Without it, the user can also start Brave once by hand with `--remote-debugging-port=9222`.
 
 ## Other failures
 
