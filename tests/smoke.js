@@ -135,7 +135,7 @@ const ID = 'A'.repeat(32), ID2 = 'B'.repeat(32);
   const seen = []; // every command the relay forwarded upstream
   const MINE = 'C'.repeat(32); // a "user" tab the agent must never see
   const upHttp = http.createServer((req, res) => res.end(req.url === '/json/version'
-    ? JSON.stringify({ webSocketDebuggerUrl: `ws://127.0.0.1:${FAKE_UPSTREAM}/devtools/browser/fake` }) : (req.url === '/json/list' ? JSON.stringify([{ id: ID, type: 'page', url: 'https://example.com', title: 't' }]) : '[]')));
+    ? JSON.stringify({ webSocketDebuggerUrl: `ws://127.0.0.1:${FAKE_UPSTREAM}/devtools/browser/fake` }) : (req.url === '/json/list' ? JSON.stringify([{ id: ID, type: 'page', url: 'https://example.com', title: 't' }, { id: MINE, type: 'page', url: 'https://mine.example', title: 'my private tab' }]) : '[]')));
   const upWss = new WebSocketLib.Server({ server: upHttp });
   upWss.on('connection', (sock) => sock.on('message', (d) => {
     const m = JSON.parse(d.toString()); seen.push(m);
@@ -304,6 +304,28 @@ const ID = 'A'.repeat(32), ID2 = 'B'.repeat(32);
       assert(woke.json.rev > rev && !woke.json.tabs[X] && Date.now() - started < 5000, 'long-poll answered as soon as the registry changed');
       assert(!(await get('/_agent/registry')).tabs[X], 'dragged-out tab is yours again');
       assert.strictEqual(spawnSync(py, ['-I', path.join(PLUGIN, 'scripts', 'tab-status.py'), 'release', '--agent', 'claude', '--tab', X, '-v'], { env, encoding: 'utf8' }).status, 0);
+    });
+    await ok("relay: /json/list shows agents only agent tabs; claim --match hands over exactly one tab by its words; close", async () => {
+      const list = (headers = {}) => new Promise((res, rej) => http.get({ host: '127.0.0.1', port: RELAY_PORT, path: '/json/list', headers }, (r) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => res(JSON.parse(d).map((t) => t.id))); }).on('error', rej));
+      assert.deepStrictEqual(await list(), [ID], "the user's tab (title, URL) is not listed");
+      assert.deepStrictEqual(await list({ 'x-agent': 'hermes' }), [], "a named agent sees only its own");
+      assert.deepStrictEqual(await list({ 'x-agent': 'claude' }), [ID]);
+      assert.match((await post({ cmd: 'claim', agent: 'hermes', match: 'zzzz-no-such-tab' })).error, /^0 tabs match/);
+      assert.match((await post({ cmd: 'claim', agent: 'hermes', match: 'ab' })).error, /at least 3/);
+      const got = await post({ cmd: 'claim', agent: 'hermes', match: 'MINE.example' });
+      assert(got.ok && got.tab === MINE && got.url === 'https://mine.example', JSON.stringify(got));
+      assert.deepStrictEqual(await list({ 'x-agent': 'hermes' }), [MINE], 'after the hand-over it is listed to that agent');
+      assert.match((await post({ cmd: 'close', agent: 'hermes', tab: ID })).error, /not your tab/);
+      const before = seen.length;
+      assert((await post({ cmd: 'close', agent: 'hermes' })).ok);
+      await sleep(150);
+      const closes = () => seen.slice(before).filter((x) => x.method === 'Target.closeTarget').map((x) => x.params.targetId);
+      assert(!closes().includes(MINE) && !closes().includes(ID), '"close all" leaves a handed-over tab and other agents\' tabs alone: ' + closes());
+      assert.deepStrictEqual(await post({ cmd: 'close', agent: 'hermes', tab: MINE }), { ok: true, closed: 1 });
+      await sleep(150);
+      assert(closes().includes(MINE), 'an explicit close of its own tab reaches the browser');
+      assert.deepStrictEqual(await post({ cmd: 'release', agent: 'hermes', tab: MINE }), { ok: true });
+      assert.deepStrictEqual(await post({ cmd: 'expect', agent: 'hermes', space: 'container:agent-hermes', url: 'https://vault.bitwarden.com' }), { ok: false, error: 'url not allowed' });
     });
     await ok('agent-tab.py: Brave is found on Linux without BRAVE_PATH (launcher on PATH)', () => {
       if (process.platform !== 'linux') return;

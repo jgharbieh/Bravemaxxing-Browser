@@ -113,7 +113,9 @@ With the extension loaded, the relay's list of agent tabs is mirrored into tab g
 - A tab an agent opens joins the group named after the agent (one group per agent per window). It is never activated.
 - **You drag a tab into the group:** it is handed to that agent. A tab on your wall list is refused and drops back out.
 - **You drag a tab out of the group:** you took it back. The same happens from the command line with
-  `tab-status release --tab <id>`; `tab-status claim --tab <id>` is the command-line way to hand one over.
+  `tab-status release --tab <id>`.
+- **Hand one over by naming it:** `tab-status claim --match "words from its title or URL"` gives the agent that
+  one tab, and only if exactly one tab matches. The agent is never shown a list of your tabs.
 - When the agent's last tab closes, the group goes with it. After a Brave restart, leftover agent groups are dissolved
   (the tabs stay; they are just no longer agent tabs).
 
@@ -205,8 +207,9 @@ Claude Code hooks (SessionStart / PreToolUse / PostToolUse / Stop)
   tab-group extension's own origin, and only on `/_ext/`. Status writes must be `application/json`.
 - **Default deny.** An agent can attach only to tabs in the registry, and any command that names another tab
   (`Target.closeTarget`, a session on a tab that was handed back, and so on) is answered with an error by the relay.
-  Brave's plain-HTTP tab endpoints are covered too: `/json/activate` and `/json/new` are always refused (they take focus),
-  `/json/close` only works on an agent tab.
+  Brave's plain-HTTP tab endpoints are covered too: `/json/list` shows only agent tabs (a caller that sends `X-Agent`
+  sees only its own), `/json/activate` and `/json/new` are always refused (they take focus), `/json/close` only works
+  on an agent tab. `tab-status close` closes the tabs an agent opened itself, never one you handed over.
 - **Registry.** The relay owns a registry of agent tabs (`registry.json` in the state folder). A tab joins it when the agent
   creates it through the relay, when `agent-tab` registers it, when you drag it into an agent's group, or when you run
   `tab-status claim --tab <id>`. It leaves when it closes, when you drag it out, or with `tab-status release --tab <id>`.
@@ -229,7 +232,6 @@ Claude Code hooks (SessionStart / PreToolUse / PostToolUse / Stop)
   `tab-status claim` stays where it is.
 - **No separate-profile mode.** Opening a tab in another Brave profile means a new window, which takes focus, so it is left out.
 - **`bin/` commands are bash scripts.** On Windows they work from Claude's Bash tool (Git Bash), not from PowerShell.
-- **Command-line takeover needs the tab id.** `curl -s http://127.0.0.1:9333/json/list` lists tab ids; the list is not filtered.
 - A closed tab leaves the registry. When the relay restarts, entries for tabs that no longer exist are dropped and the rest are re-attached.
 - The relaunch is the only way this plugin turns Brave's CDP port on. After a reboot, or after you start Brave yourself,
   the port is off again until you relaunch.

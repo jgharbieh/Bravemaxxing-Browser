@@ -49,11 +49,6 @@ RELAY = kitconfig.relay_url(CFG)
 FORBIDDEN = kitconfig.wall_regex(CFG)  # same rule as the relay's wall: this path launches Brave directly, so the relay can't refuse it
 
 
-def pages() -> dict:
-    with urllib.request.urlopen(RELAY + "/json/list", timeout=5) as r:
-        return {t["id"]: t for t in json.load(r) if t.get("type") == "page"}
-
-
 def registry():
     """The relay's tab registry, or None if it can't be read. None must never be treated as 'no tabs'."""
     try:
@@ -78,14 +73,15 @@ def same_partition(a_id: str, b_id: str):
     return status({"cmd": "partition", "agent": "probe", "tab": a_id, "other": b_id}).get("same")
 
 
-def wait_new(before: dict, url: str, timeout: float):
+def wait_new(before: dict, agent: str, space: str, timeout: float):
+    """The relay registers the new tab itself (it was told what to expect); wait for it to show up in the registry."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         time.sleep(0.4)
-        fresh = [t for i, t in pages().items() if i not in before]
+        reg = registry() or {}
+        fresh = [i for i, t in reg.items() if i not in before and t.get("agent") == agent and t.get("space") == space]
         if fresh:
-            match = [t for t in fresh if t.get("url", "").startswith(url.split("#")[0][:40])]
-            return (match or fresh)[0]["id"]
+            return fresh[0]
     return None
 
 
@@ -136,7 +132,7 @@ def main() -> int:
         return 3
 
     try:
-        before = pages()
+        urllib.request.urlopen(RELAY + "/json/version", timeout=5).close()
     except OSError:
         print("agent-tab: Brave CDP relay not reachable; run brave-agent-ready first", file=sys.stderr)
         return 2
@@ -146,6 +142,7 @@ def main() -> int:
     if reg is None:
         print("agent-tab: REFUSED - relay registry unreadable; not launching (a launch takes focus)", file=sys.stderr)
         return 2
+    before = dict(reg)  # the registry only holds live tabs: the relay drops a tab the moment it closes
     probe = status({"cmd": "turn-end", "agent": "agenttab-probe"})
     if not probe.get("ok"):
         print(f"agent-tab: REFUSED - relay not accepting writes ({probe.get('error')}); not launching", file=sys.stderr)
@@ -165,7 +162,7 @@ def main() -> int:
         if not r.get("ok"):
             print(f"agent-tab: open in container failed: {r.get('error')}", file=sys.stderr)
             return 1
-        new_id = wait_new(before, a.url, a.timeout)
+        new_id = wait_new(before, agent, space, a.timeout)
         if not new_id:
             print(f"agent-tab: no new tab appeared within {a.timeout}s (from {mine[0]})", file=sys.stderr)
             return 1
@@ -178,20 +175,19 @@ def main() -> int:
         print("agent-tab: Brave not found. Set BRAVE_PATH to the browser binary.", file=sys.stderr)
         return 6
     fg = foreground()
+    r = status({"cmd": "expect", "agent": agent, "space": space, "url": a.url})  # the relay claims the tab when it appears
+    if not r.get("ok"):
+        print(f"agent-tab: REFUSED - relay would not expect the tab ({r.get('error')}); not launching", file=sys.stderr)
+        return 2
     flags = 0x00000008 | 0x08000000 if sys.platform == "win32" else 0  # detached, no console window
     subprocess.Popen([brave, f"--container={container}", a.url], creationflags=flags, close_fds=True)
 
-    new_id = wait_new(before, a.url, a.timeout)
+    new_id = wait_new(before, agent, space, a.timeout)
     focus_ok = restore_focus(fg)
 
     if not new_id:
         print(f"agent-tab: no new tab appeared within {a.timeout}s ({space})", file=sys.stderr)
         return 1
-
-    # Register with the relay: it owns the tab registry and keeps the status emoji in the title.
-    r = status({"cmd": "register", "agent": agent, "tab": new_id, "space": space})
-    if not r.get("ok"):
-        print(f"agent-tab: tab opened but NOT registered: {r.get('error')}", file=sys.stderr)
 
     ab = shutil.which("agent-browser")  # full path: on Windows it's a .cmd shim CreateProcess can't find bare
     if not a.no_bind and ab:

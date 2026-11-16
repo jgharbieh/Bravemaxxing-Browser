@@ -108,6 +108,15 @@ function control(body) {
   switch (cmd) {
     case 'register': // from agent-tab: a fresh agent tab; it is in use right now
     case 'claim': {
+      if (cmd === 'claim' && !tab && body.match) { // hand-over by the words the user used: exactly one tab must match
+        const q = String(body.match).toLowerCase().trim();
+        if (q.length < 3) return { ok: false, error: 'match needs at least 3 characters' };
+        const hits = [...keeper.urls.keys()].filter((id) => !reg.tabs[id] && (String(keeper.titles.get(id) || '').toLowerCase().includes(q) || String(keeper.urls.get(id) || '').toLowerCase().includes(q)));
+        if (hits.length !== 1) return { ok: false, error: `${hits.length} tabs match; use other words from its title or URL, or ask the user to drag the tab into your tab group` };
+        if (FORBIDDEN.test(keeper.urls.get(hits[0]) || '')) return { ok: false, error: 'that site is on the wall list' };
+        const err = claimTab(hits[0], 'takeover');
+        return err || { ok: true, tab: hits[0], title: keeper.titles.get(hits[0]) || '', url: keeper.urls.get(hits[0]) || '' };
+      }
       const err = claimTab(tab, (cmd === 'register' || /^container:[\w-]{1,40}$/.test(space || '')) ? space : 'takeover');
       if (err) return err;
       if (cmd === 'register') touch(tab);
@@ -141,6 +150,20 @@ function control(body) {
       if (!t || t.agent !== agent) return { ok: false, error: 'tab is not yours' };
       if (!/^https?:\/\//i.test(body.url || '') || FORBIDDEN.test(body.url)) return { ok: false, error: 'url not allowed' };
       keeper.openIn(tab, body.url);
+      return { ok: true };
+    }
+    case 'close': { // close one of the agent's tabs, or all of them (agent-browser cannot close its last tab)
+      const ids = tab ? [tab] : mine.filter(([, t]) => t.space !== 'takeover').map(([id]) => id); // "all" never includes a tab the user handed over
+      for (const id of ids) {
+        const t = reg.tabs[id];
+        if (!t || (t.agent !== agent && t.agent !== UNOWNED)) return { ok: false, error: 'not your tab' };
+      }
+      for (const id of ids) keeper.send('Target.closeTarget', { targetId: id });
+      return { ok: true, closed: ids.length };
+    }
+    case 'expect': { // agent-tab is about to launch a container tab: the next new tab with this URL is this agent's
+      if (!/^https?:\/\//i.test(body.url || '') || FORBIDDEN.test(body.url)) return { ok: false, error: 'url not allowed' };
+      (keeper.expect ||= []).push({ url: body.url, agent, space: space || 'relay', until: Date.now() + 20000 });
       return { ok: true };
     }
     case 'release': { // hand a tab back to you: the agent can no longer see or drive it
@@ -222,7 +245,7 @@ const keeperScript = (status, native, bind) => `(() => {
 })();`;
 
 const keeper = {
-  ws: null, nextId: 1, pending: new Map(), sessions: new Map(), scripts: new Map(), urls: new Map(),
+  ws: null, nextId: 1, pending: new Map(), sessions: new Map(), scripts: new Map(), urls: new Map(), titles: new Map(),
   send(method, params = {}, sessionId) {
     if (!this.ws || this.ws.readyState !== 1) return Promise.resolve(null);
     const id = this.nextId++;
@@ -338,7 +361,7 @@ const keeper = {
       save();
       this.attach(id);
     }
-    this.urls.set(id, info.url);
+    this.urls.set(id, info.url); this.titles.set(id, info.title || '');
     const t = reg.tabs[id];
     if (t && FORBIDDEN.test(info.url || '')) {
       wallLog({ layer: 3, action: 'closed', agent: t.agent, tab: id, url: info.url });
@@ -370,7 +393,7 @@ const keeper = {
           await this.send('Target.setDiscoverTargets', { discover: true });
           const r = await this.send('Target.getTargets');
           const infos = ((r && r.result && r.result.targetInfos) || []).filter((t) => t.type === 'page');
-          for (const t of infos) this.urls.set(t.targetId, t.url); // needed by the attach wall below
+          for (const t of infos) { this.urls.set(t.targetId, t.url); this.titles.set(t.targetId, t.title || ''); } // needed by the attach wall below
           const live = new Set(infos.map((t) => t.targetId));
           for (const id of Object.keys(reg.tabs)) if (!live.has(id)) delete reg.tabs[id]; // closed while we were down
           save();
@@ -383,7 +406,7 @@ const keeper = {
           if (m.method === 'Target.targetCreated') this.onTarget(m.params.targetInfo, true);
           else if (m.method === 'Target.targetInfoChanged') this.onTarget(m.params.targetInfo, false);
           else if (m.method === 'Target.targetDestroyed') {
-            const id = m.params.targetId; this.forget(id); this.urls.delete(id);
+            const id = m.params.targetId; this.forget(id); this.urls.delete(id); this.titles.delete(id);
             if (reg.tabs[id]) { delete reg.tabs[id]; save(); }
           } else if (m.method === 'Target.detachedFromTarget') {
             for (const [id, sid] of this.sessions) if (sid === m.params.sessionId) this.forget(id);
@@ -469,12 +492,19 @@ const server = http.createServer((req, res) => {
       return res.end(JSON.stringify({ ok: false, error: kind === 'close' ? 'agent wall: not an agent tab' : `agent wall: /json/${kind} takes focus; use the CDP websocket (Target.createTarget) through this relay` }));
     }
   }
+  const listing = /^\/json(?:\/list)?\/?(?:\?.*)?$/i.test(req.url);
+  const who = String(req.headers['x-agent'] || '').toLowerCase();
   const up = http.request({ host: '127.0.0.1', port: UPSTREAM, path: req.url, method: req.method, headers: req.headers }, (ur) => {
     const chunks = [];
     ur.on('data', (c) => chunks.push(c));
     ur.on('end', () => {
       let body = Buffer.concat(chunks).toString('utf8');
       body = body.split(`127.0.0.1:${UPSTREAM}`).join(`127.0.0.1:${LISTEN}`).split(`localhost:${UPSTREAM}`).join(`127.0.0.1:${LISTEN}`);
+      if (listing) { // your tabs (titles, URLs) are not listed to agents: only agent tabs, and to a named caller only its own
+        try {
+          body = JSON.stringify(JSON.parse(body).filter((t) => { const r = reg.tabs[t.id]; return r && (!who || r.agent === who || r.agent === UNOWNED); }), null, 1);
+        } catch { body = '[]'; }
+      }
       const headers = { ...ur.headers };
       delete headers['content-length'];
       res.writeHead(ur.statusCode, headers);

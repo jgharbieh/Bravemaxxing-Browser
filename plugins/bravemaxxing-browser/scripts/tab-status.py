@@ -12,6 +12,8 @@ hook-style commands stay silent, claim/register/adopt print an error if the rela
   tab-status done     [--agent NAME]
   tab-status turn-end [--agent NAME]
   tab-status claim    [--agent NAME] --tab <32hex>                (take over one of YOUR tabs for the agent)
+  tab-status claim    [--agent NAME] --match "words"              (same, by words from its title or URL; exactly one tab must match)
+  tab-status close    [--agent NAME] [--tab <32hex>]              (close one of the agent's tabs; without --tab, all it opened itself)
   tab-status release  [--agent NAME] --tab <32hex>                (hand a tab back to the user)
   tab-status register [--agent NAME] --tab <32hex> --space <name> (agent-tab does this)
   tab-status adopt    [--agent NAME]                              (claim relay-created tabs from the last 60 s)
@@ -56,7 +58,7 @@ def main() -> None:
         with urllib.request.urlopen(req, timeout=0.12 if quiet else 3) as r:
             reply = r.read().decode()
         failed = '"ok":false' in reply.replace(" ", "")
-        if verbose or (failed and not quiet):
+        if verbose or (failed and not quiet) or (cmd in ("claim", "close") and not failed):
             print(reply, file=sys.stderr if failed else sys.stdout)
     except Exception as e:  # relay down / slow: hooks must never fail or block
         if verbose or not quiet:

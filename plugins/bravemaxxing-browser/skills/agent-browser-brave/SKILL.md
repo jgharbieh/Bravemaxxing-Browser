@@ -1,7 +1,7 @@
 ---
 name: agent-browser-brave
 description: How to drive the user's own Brave browser well with the agent-browser CLI: where to work (your own tab group, a tab the user hands you, or a separate hidden browser), how to act on pages reliably (snapshot, click, type, hover, drag, double-click), and how to stay out of the user's way. Use for any browsing, form filling, scraping, testing or "watch it happen" request.
-allowed-tools: Bash(agent-browser:*), Bash(brave-agent-ready:*), Bash(agent-tab:*), Bash(tab-status:*), Bash(curl -s http://127.0.0.1:9333/json/list)
+allowed-tools: Bash(agent-browser:*), Bash(brave-agent-ready:*), Bash(agent-tab:*), Bash(tab-status:*)
 ---
 
 # Driving Brave
@@ -36,8 +36,9 @@ the session starts with). Open more with `tab new <url>`. They open in the backg
 
 **A tab of the user's.** You cannot see the user's tabs until one is handed to you. Two ways:
 - They drag the tab into your tab group. It then shows up in `agent-browser --session <name> tab`.
-- They tell you to take it. Find its id with `curl -s http://127.0.0.1:9333/json/list` (match the title or
-  URL they named), then `tab-status claim --agent <name> --tab <id>`.
+- They tell you to take it. Run `tab-status claim --agent <name> --match "<words from the title or URL they named>"`.
+  It hands you that one tab and prints its id. If it says several tabs match, use more exact words or ask
+  them to drag the tab into your group. You are never shown a list of their tabs.
 
 Bind with `agent-browser --session <name> tab <id>` and confirm with `get url` before you act.
 When they drag it out of the group, or you run `tab-status release --agent <name> --tab <id>`, it is theirs
@@ -76,7 +77,9 @@ A ref or a CSS selector (`"#id"`, `".class"`) both work. The CLI's own reference
 - **Never take focus.** There is no "bring to front" step. If you need the user, say so in chat and name the
   tab by its title. The status emoji in the title (🤖 acting, ✅ action done, ⏸️ turn over) shows them the rest.
 - **Keep your group small.** Reuse a tab with `open <url>` instead of opening another. Close each tab when you
-  are done with it (`tab` lists them, `tab close <tN>`). End a task with only the tabs the user needs to see.
+  are done with it (`tab` lists them, `tab close <tN>`). `agent-browser` cannot close a session's last tab, so
+  finish with `tab-status close --agent <name>`: it closes every tab you opened and leaves handed-over tabs alone.
+  End a task with only the tabs the user needs to see.
 - **Only your tabs.** After every `tab <id>` and after anything that opens a tab, run `get url` and check it
   is the page you expect. If it is not, stop and rebind; do not act.
 - **Leave their things alone.** Never set tab titles by hand, never move or rename tab groups, never open
