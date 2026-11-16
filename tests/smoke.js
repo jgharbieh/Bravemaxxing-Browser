@@ -327,6 +327,25 @@ const ID = 'A'.repeat(32), ID2 = 'B'.repeat(32);
       assert.deepStrictEqual(await post({ cmd: 'release', agent: 'hermes', tab: MINE }), { ok: true });
       assert.deepStrictEqual(await post({ cmd: 'expect', agent: 'hermes', space: 'container:agent-hermes', url: 'https://vault.bitwarden.com' }), { ok: false, error: 'url not allowed' });
     });
+    await ok('relay: focus is a choice: quiet by default, surface refused until together or an allowed bot check', async () => {
+      assert.deepStrictEqual(await post({ cmd: 'focus', agent: 'claude' }), { ok: true, mode: 'quiet', captcha: 'ask' });
+      assert.match((await post({ cmd: 'surface', agent: 'claude', tab: ID })).error, /quiet mode/);
+      assert.match((await post({ cmd: 'surface', agent: 'claude', tab: ID, reason: 'captcha' })).error, /ask the user/);
+      assert.match((await post({ cmd: 'surface', agent: 'hermes', tab: ID, reason: 'captcha' })).error, /not yours/);
+      assert.match((await post({ cmd: 'focus', agent: 'claude', mode: 'loud' })).error, /quiet or together/);
+      const before = seen.length;
+      assert.strictEqual((await post({ cmd: 'focus', agent: 'claude', captcha: 'allow' })).captcha, 'allow');
+      assert.strictEqual((await post({ cmd: 'surface', agent: 'claude', tab: ID, reason: 'captcha' })).ok, true);
+      assert.strictEqual((await post({ cmd: 'focus', agent: 'claude', captcha: 'ask' })).captcha, 'ask');
+      assert.strictEqual((await post({ cmd: 'focus', agent: 'claude', mode: 'together' })).mode, 'together');
+      assert.strictEqual((await post({ cmd: 'working', agent: 'claude' })).ok, true);
+      assert.strictEqual((await get('/_agent/registry')).agents.claude.focus, 'together', 'a status update keeps the focus setting');
+      assert.strictEqual((await post({ cmd: 'surface', agent: 'claude', tab: ID })).ok, true);
+      await sleep(150);
+      assert.strictEqual(seen.slice(before).filter((x) => x.method === 'Target.activateTarget' && x.params.targetId === ID).length, 2, 'both allowed surfaces reached the browser');
+      assert.strictEqual((await post({ cmd: 'focus', agent: 'claude', mode: 'quiet' })).mode, 'quiet');
+      assert.match((await post({ cmd: 'where', agent: 'claude' })).error, /extension is not running/);
+    });
     await ok('agent-tab.py: Brave is found on Linux without BRAVE_PATH (launcher on PATH)', () => {
       if (process.platform !== 'linux') return;
       const bin = path.join(tmp, 'fakebin'); fs.mkdirSync(bin, { recursive: true });

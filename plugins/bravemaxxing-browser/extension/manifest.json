@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bravemaxxing Tab Groups",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Keeps each AI agent's tabs in its own tab group. Drag a tab into the group to hand it to the agent, drag it out to take it back. Talks only to the local Bravemaxxing relay.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoxAPag15a697nOdal4jGrALaDbIWxudq+DWKFDu1skz93FWScnx9w9L8PXSAaI81IxqT9uhmiBW0pgSX/+Rh822fXK3qd4W9XBbxJkBec3RkB+NLzApd0f1lvB7Q0vpu/ptWiQ+KXo4aOKsU7hquKaFTUrnH8hmQCUhDayw+qufM6MisDF/10+fRi0bGcj67AebJincZC96wZZy9M3cac/0q6Sqqd8vnFQsY8Jlaq7OArDEy362lv9uKBOtzymc1QMKbvJiwm4kutllrYDKhoJOs3mJYQ0LcNl6A/F8b/+7DJZI/739Aj9Mqzb/ns/Kmhz/r3MsZUHi4z4D8595zZQIDAQAB",
   "minimum_chrome_version": "120",

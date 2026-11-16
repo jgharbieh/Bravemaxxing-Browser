@@ -5,8 +5,10 @@
 //   - You drag a tab OUT of the group       -> you take it back (the agent can no longer see it).
 //   - The group title shows what the agent is doing: 🤖 working, ✅ action done, no emoji = idle.
 //
-// The relay (cdp-quiet.js) owns the truth: which tab belongs to which agent. This worker only mirrors it into
-// tab groups and reports your drags back. It talks to http://127.0.0.1:<relay port> and nothing else.
+// The relay (cdp-quiet.js) owns the truth: which tab belongs to which agent. This worker mirrors it into
+// tab groups and reports your drags back. It also does four small things for the relay that only an extension
+// can do cleanly: open a tab truly in the background, switch to a tab without raising the window, raise the
+// window, and say which tab is in front. It talks to http://127.0.0.1:<relay port> and nothing else.
 // The "debugger" permission is used for one read-only call, chrome.debugger.getTargets(), which maps a tab to
 // the id the relay knows it by. It never attaches to a tab.
 const MARK = '​'; // invisible suffix: marks a group as owned by this extension (never match a group of yours by name)
@@ -73,7 +75,12 @@ async function sync() {
     let group = mine.find((g) => agentOf(g.title) === agent && g.windowId === Number(win));
     const add = list.filter((t) => !group || t.groupId !== group.id).map((t) => t.id);
     let gid = group && group.id;
-    if (add.length) gid = await chrome.tabs.group(group ? { groupId: group.id, tabIds: add } : { tabIds: add, createProperties: { windowId: Number(win) } });
+    if (add.length) {
+      const front = (await chrome.tabs.query({ active: true, windowId: Number(win) }))[0];
+      gid = await chrome.tabs.group(group ? { groupId: group.id, tabIds: add } : { tabIds: add, createProperties: { windowId: Number(win) } });
+      const now = (await chrome.tabs.query({ active: true, windowId: Number(win) }))[0];
+      if (front && now && now.id !== front.id && add.includes(now.id)) await chrome.tabs.update(front.id, { active: true }); // grouping must not change your view
+    }
     const title = titleFor(agent, ((state.agents || {})[agent] || {}).state);
     const color = colorFor(agent);
     if (!group || group.title !== title || group.color !== color) await chrome.tabGroups.update(gid, { title, color });
@@ -86,6 +93,54 @@ async function sync() {
   const stale = [...tabs.values()].filter((t) => t.groupId !== -1 && mine.some((g) => g.id === t.groupId) && !agentTab.has(t.id)
     && now - (moved.get(t.id) || 0) > 3000).map((t) => t.id);
   if (stale.length) await chrome.tabs.ungroup(stale);
+}
+
+// Requests from the relay (state.todo). Each is done once and answered.
+const handled = new Set();
+async function work(list) {
+  for (const t of list || []) {
+    if (handled.has(t.id)) continue;
+    handled.add(t.id);
+    let result = {};
+    try {
+      if (t.op === 'create') { // a new agent tab: next to the agent's other tabs, never in a window of its own
+        const groups = await chrome.tabGroups.query({});
+        const group = groups.find((g) => agentOf(g.title) === String(t.agent).toLowerCase());
+        let windowId = group && group.windowId;
+        if (windowId == null) { const w = await chrome.windows.getLastFocused({ windowTypes: ['normal'] }).catch(() => null); windowId = w && w.id; }
+        const front = async (win) => (await chrome.tabs.query({ active: true, windowId: win }))[0] || null;
+        const before = windowId != null ? await front(windowId) : null;
+        const tab = await chrome.tabs.create({ url: t.url || 'about:blank', active: !!t.active, ...(windowId != null ? { windowId } : {}) });
+        let target = null;
+        for (let i = 0; i < 40 && !target; i++) { target = (await targets()).toTarget.get(tab.id) || null; if (!target) await sleep(50); }
+        result = { target };
+        if (!t.active) keepView(tab, before); // some setups switch to a new tab anyway: put your view back
+      } else if (t.op === 'activate') { // show a tab: inside Brave only, unless the window was asked for too
+        const tabId = (await targets()).toTab.get(String(t.tab).toUpperCase());
+        if (tabId != null) {
+          const tab = await chrome.tabs.update(tabId, { active: true });
+          if (t.window) await chrome.windows.update(tab.windowId, { focused: true });
+          result = { ok: true };
+        }
+      } else if (t.op === 'where') { // which tab is in front of each window, and is Brave the focused app
+        const { toTarget } = await targets();
+        const wins = await chrome.windows.getAll({ populate: true, windowTypes: ['normal'] });
+        result = { windows: wins.map((w) => ({ focused: w.focused, active: toTarget.get((w.tabs.find((x) => x.active) || {}).id) || null })) };
+      }
+    } catch (e) { result = { error: String((e && e.message) || e) }; }
+    try { await api('/_ext/event', { type: 'did', id: t.id, result }); } catch { /* relay gone: it times the request out */ }
+  }
+  if (handled.size > 500) handled.clear();
+}
+
+// A background tab must not end up in front. If it does within its first second and a half, restore what was there.
+async function keepView(tab, before) {
+  if (!before || before.id === tab.id) return;
+  for (let i = 0; i < 15; i++) {
+    const now = (await chrome.tabs.query({ active: true, windowId: tab.windowId }).catch(() => []))[0];
+    if (now && now.id === tab.id) { await chrome.tabs.update(before.id, { active: true }).catch(() => {}); return; }
+    await sleep(100);
+  }
 }
 
 // A tab changed group. If YOU did it, it is a hand-over or a take-back.
@@ -130,9 +185,10 @@ chrome.runtime.onStartup.addListener(() => chrome.alarms.create('wake', { period
 (async function loop() {
   for (;;) {
     try {
-      const next = await api(`/_ext/state?wait=1&rev=${state ? state.rev : 0}`);
+      const next = await api(`/_ext/state?from=ext&wait=1&rev=${state ? state.rev : 0}`);
       const changed = !state || next.rev !== state.rev;
       state = next;
+      if ((next.todo || []).length) await work(next.todo); // answered at once, ahead of any queued tidy-up
       if (changed) run(sync);
     } catch {
       await sleep(3000); // relay not running: try again quietly

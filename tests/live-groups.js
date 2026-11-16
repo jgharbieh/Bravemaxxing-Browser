@@ -94,6 +94,43 @@ function cdp(url, headers) { // minimal CDP client
     assert.strictEqual((await tabs()).find((t) => t.id === mine.id).groupId, -1);
     step('dragging it out takes it back: hidden, attach and close refused, tab untouched');
 
+    // 4b. focus is a choice. quiet (default): the agent never changes what you are looking at
+    const isActive = async (title) => { const t = (await tabs()).find((x) => x.title.includes(title)); return !!t && t.active; };
+    await inExt(`chrome.tabs.update(${mine.id}, { active: true })`);
+    await hermes.send('Target.activateTarget', { targetId: created });
+    await sleep(700);
+    assert.strictEqual(await isActive('agent page'), false, 'quiet: an activate command changes nothing');
+    assert.strictEqual((await post({ cmd: 'surface', agent: 'hermes', tab: created })).ok, false, 'quiet: surface refused');
+    step('quiet mode: activate and surface do not move your view');
+
+    // bot check: only after the user said yes (per task here; focus.captcha in the config makes it permanent)
+    assert.match((await post({ cmd: 'surface', agent: 'hermes', tab: created, reason: 'captcha' })).error, /ask the user/);
+    assert.strictEqual((await post({ cmd: 'focus', agent: 'hermes', captcha: 'allow' })).captcha, 'allow');
+    assert.strictEqual((await post({ cmd: 'surface', agent: 'hermes', tab: created, reason: 'captcha' })).ok, true);
+    await until('surfaced for the bot check', () => isActive('agent page'));
+    const where = await post({ cmd: 'where', agent: 'hermes' });
+    assert(where.ok && where.front_tab.includes('your tab ' + created), JSON.stringify(where));
+    await inExt(`chrome.tabs.update(${mine.id}, { active: true })`);
+    const where2 = await post({ cmd: 'where', agent: 'hermes' });
+    assert(where2.ok && where2.front_tab.includes("the user's own tab") && !JSON.stringify(where2).includes('about:blank'), JSON.stringify(where2));
+    step('a bot check may surface the tab only after you allow it; "where" says whose tab is in front, never what yours is');
+
+    // together: you are working with the agent, so your view follows it
+    assert.strictEqual((await post({ cmd: 'focus', agent: 'hermes', mode: 'together' })).mode, 'together');
+    await hermes.send('Target.activateTarget', { targetId: created });
+    await until('view follows the agent', () => isActive('agent page'));
+    const second = (await hermes.send('Target.createTarget', { url: 'data:text/html,<title>second page</title>2' })).result.targetId;
+    await until('a new tab opens in front', () => isActive('second page'));
+    assert.strictEqual((await post({ cmd: 'focus', agent: 'hermes', mode: 'quiet' })).mode, 'quiet');
+    const third = (await hermes.send('Target.createTarget', { url: 'data:text/html,<title>third page</title>3' })).result.targetId;
+    await until('third tab exists', async () => (await tabs()).some((t) => t.title.includes('third page')));
+    await sleep(500);
+    assert.strictEqual(await isActive('third page'), false, 'back in quiet mode a new tab stays in the background');
+    assert.strictEqual(await isActive('second page'), true, 'and what you were looking at is still in front');
+    for (const id of [second, third]) assert(!(await hermes.send('Target.closeTarget', { targetId: id })).error);
+    await until('extra tabs closed', async () => Object.keys(await registry()).length === 1);
+    step('together mode: your view follows the agent and new tabs open in front; back to quiet, they stay behind');
+
     // 5. a second agent gets its own group; one agent cannot touch the other's tab
     const claude = await cdp(`ws://127.0.0.1:${RELAY}/agent/claude`);
     await claude.send('Target.createTarget', { url: 'data:text/html,<title>claude page</title>hi' });

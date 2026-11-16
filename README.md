@@ -8,8 +8,10 @@ You keep working. The agent works in its own tabs, in the background, and you ca
 
 ## What you get
 
-- **No focus stealing.** A small relay sits between the agent and Brave. It drops "bring to front" and "activate tab"
-  commands, opens every new tab and popup in the background, and wakes frozen (Memory Saver) tabs without switching to them.
+- **Your attention moves only by choice.** A small relay sits between the agent and Brave. By default the agent is
+  *quiet*: "bring to front" and "activate tab" commands are dropped, every new tab and popup opens in the background, and
+  frozen (Memory Saver) tabs are woken without switching to them. When you work on something *together*, the agent says
+  so and your view follows the tab it is on. See [Focus](#focus).
 - **A tab group per agent.** Each agent's tabs sit in one tab group named after it, in your window. Collapse it and
   they are out of your way. The group title shows what the agent is doing (🤖 working, ✅ action done, no emoji = idle).
 - **Hand a tab over by dragging it.** Drag one of your tabs into an agent's group and the agent can see and drive it.
@@ -100,11 +102,34 @@ Commands the plugin puts on `PATH` for Claude's Bash tool: `brave-agent-ready`, 
 Skills: `/bravemaxxing-browser:agent-browser-brave`, `/bravemaxxing-browser:brave-agent-ready`, `/bravemaxxing-browser:agent-tab`.
 
 > **Warning: the relaunch.** `BRAVE_RELAUNCH_OK=1 brave-agent-ready` closes **every** Brave window and relaunches Brave with
-> your tabs restored. The new window takes focus. Without the variable, `brave-agent-ready` never restarts anything. Agents
-> should never set it.
+> your tabs restored. The new window takes focus. By default `brave-agent-ready` never relaunches a running Brave without
+> that variable, and agents should never set it. If you would rather have it happen on its own whenever the port is down,
+> set `"relaunch": "allow"` in your config.
 > On Windows it force-closes Brave and edits the `exit_type` field in each profile's `Preferences` file so Brave does not show
 > a crash popup. On Linux it asks Brave to quit normally, edits nothing, and gives up without relaunching if Brave has not
 > quit within 10 seconds.
+
+## Focus
+
+Taking your attention is a decision the agent makes from what you asked for, never a side effect.
+
+| Mode | For | What the agent's browser commands do |
+|---|---|---|
+| `quiet` (default) | The agent's own work | New tabs open behind yours. Nothing is switched, nothing is raised. |
+| `together` | "Walk me through this", work across several tabs with you | The tab the agent works on becomes the visible tab and new tabs open in front. Brave itself is not raised over your other apps. |
+
+- The agent sets it per task: `tab-status focus --mode together`, and `--mode quiet` when the shared part is over.
+  `together` also lapses after 30 minutes without a browser command.
+- **Two levels, kept apart.** `tab-status surface --tab <id>` switches to one of the agent's tabs inside Brave.
+  Adding `--window true` also raises Brave over your other windows. Both are refused in quiet mode.
+- **Bot checks are your call.** `tab-status surface --tab <id> --reason captcha` works only if you allowed it:
+  for good with `"focus": {"captcha": "allow"}` in the config, or per task when the agent asks and then runs
+  `tab-status focus --captcha allow`. `"captcha": "never"` shuts it off. The agent never solves a bot check.
+- **The agent can look first.** `tab-status where` tells it whether Brave is the focused app and whether the tab in
+  front is one of its own. It is never told anything about a tab of yours.
+
+These need the tab-group extension: only an extension can switch a tab without raising the window. Without it,
+`surface` falls back to the browser's own activate call, which may raise the window.
 
 ## Tab groups
 
@@ -144,7 +169,9 @@ default Bitwarden entry.
     "enabled": true,
     "extension_ids": ["djbahbjcpjgdbjbknmhajbdhademgamc"],
     "colors": { "claude": "orange", "hermes": "purple" }
-  }
+  },
+  "focus": { "captcha": "ask" },
+  "relaunch": "ask"
 }
 ```
 
@@ -161,6 +188,8 @@ default Bitwarden entry.
 | `groups.enabled` | `false` turns tab groups off. |
 | `groups.extension_ids` | Extension ids allowed to talk to the relay's `/_ext/` endpoint. The shipped extension has a fixed id. |
 | `groups.colors` | Agent name to tab-group colour (`grey`, `blue`, `red`, `yellow`, `green`, `pink`, `purple`, `cyan`, `orange`). Others get one picked from the name. |
+| `focus.captcha` | May an agent bring a tab forward when a site shows a bot check? `ask` (default: only after you say yes for that task), `allow`, or `never`. |
+| `relaunch` | May `brave-agent-ready` relaunch a running Brave to turn its CDP port on? `ask` (default: only when you run it with `BRAVE_RELAUNCH_OK=1`), `allow`, or `never`. A Brave that is not running is simply started with the port. |
 
 If the relay runs on another port, tell the extension: on its service-worker console run
 `chrome.storage.local.set({ port: <relay port> })`.
@@ -188,7 +217,8 @@ To prove the wall works without touching a real site, use the built-in test sent
 agent-browser ──► relay :9333 ──► Brave :9222
                     │   ▲
                     │   └── tab-group extension (long-poll /_ext/state, reports your drags)
-                    ├─ drops bringToFront / activateTarget, forces background tabs
+                    ├─ quiet mode: drops bringToFront / activateTarget, forces background tabs
+                    ├─ together mode: the agent's working tab becomes the visible tab (tab level only)
                     ├─ hides non-agent tabs; commands that name a non-agent tab never reach Brave
                     ├─ refuses navigate/eval toward walled ids and domains
                     ├─ keeps 🤖 / ✅ / ⏸️ in agent tab titles (injected keeper script)
@@ -230,6 +260,11 @@ Claude Code hooks (SessionStart / PreToolUse / PostToolUse / Stop)
   exercised part of the relay: it was only run on one Brave build on Windows. If new tabs land outside the container, look here first.
 - **Tab groups need the extension**, and a pinned tab cannot be in a group, so a pinned tab you hand over with
   `tab-status claim` stays where it is.
+- **Background tabs on Linux need the extension.** Brave on Linux can bring a tab made through CDP to the front even when
+  asked for a background tab. With the extension running, the relay has it open agent tabs instead, which stays in the
+  background. Seen on one machine: the first tab of a session still came to the front once; later tabs did not.
+- **Raising the window is best effort.** Whether `surface --window true` really puts Brave on top is up to your desktop
+  (Wayland compositors may show a "window is ready" notice instead).
 - **No separate-profile mode.** Opening a tab in another Brave profile means a new window, which takes focus, so it is left out.
 - **`bin/` commands are bash scripts.** On Windows they work from Claude's Bash tool (Git Bash), not from PowerShell.
 - A closed tab leaves the registry. When the relay restarts, entries for tabs that no longer exist are dropped and the rest are re-attached.

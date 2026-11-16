@@ -17,6 +17,13 @@ hook-style commands stay silent, claim/register/adopt print an error if the rela
   tab-status release  [--agent NAME] --tab <32hex>                (hand a tab back to the user)
   tab-status register [--agent NAME] --tab <32hex> --space <name> (agent-tab does this)
   tab-status adopt    [--agent NAME]                              (claim relay-created tabs from the last 60 s)
+  tab-status focus    [--agent NAME] [--mode quiet|together] [--captcha allow|ask]
+                                                                  (quiet: never take the user's view, the default.
+                                                                   together: you are working WITH the user, their view follows your tab.
+                                                                   --captcha allow: for this task you may show a tab stuck on a bot check)
+  tab-status surface  [--agent NAME] --tab <32hex> [--window true] [--reason captcha]
+                                                                  (show the user that tab; --window also raises Brave)
+  tab-status where    [--agent NAME]                              (is Brave the focused app, and is the tab in front yours)
   tab-status show                                                 (print the registry)
 Add -v to print the relay's reply. NAME defaults to config default_agent ("claude").
 Port: config ports.relay (default 9333), env CDP_QUIET_PORT.
@@ -55,10 +62,10 @@ def main() -> None:
             return
         body = json.dumps({"cmd": cmd, **opts}).encode()
         req = urllib.request.Request(url + "status", data=body, headers={"content-type": "application/json"})
-        with urllib.request.urlopen(req, timeout=0.12 if quiet else 3) as r:
+        with urllib.request.urlopen(req, timeout=0.12 if quiet else 6) as r:
             reply = r.read().decode()
         failed = '"ok":false' in reply.replace(" ", "")
-        if verbose or (failed and not quiet) or (cmd in ("claim", "close") and not failed):
+        if verbose or (failed and not quiet) or (cmd in ("claim", "close", "focus", "surface", "where") and not failed):
             print(reply, file=sys.stderr if failed else sys.stdout)
     except Exception as e:  # relay down / slow: hooks must never fail or block
         if verbose or not quiet:

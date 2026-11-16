@@ -73,7 +73,13 @@ function save() {
 const sameUrl = (got, want) => (!got || got === 'about:blank') ? (!want || want === 'about:blank') : got.split('#')[0].startsWith(String(want).split('#')[0].slice(0, 200));
 const UNOWNED = 'agent'; // relay-created tab whose agent isn't known yet (adopt/claim assigns it)
 const EMOJI = { working: '🤖', done: '✅', paused: '⏸️' };
-const agentState = (a) => (reg.agents[a] ||= { state: 'idle' }).state;
+const agentRec = (a) => (reg.agents[a] ||= { state: 'idle' });
+// Focus is a choice, per agent:
+//   quiet    (default) its own work: no tab switch, no window raise, new tabs open in the background.
+//   together           it is working WITH the user: the tab it works on becomes the visible tab, so they can follow.
+// "together" lapses after 30 minutes without a browser command, so a forgotten setting cannot linger.
+const FOCUS = CFG.focus || {};
+const focusMode = (a) => { const r = a && reg.agents[a]; return r && r.focus === 'together' && Date.now() - (r.active || 0) < 30 * 60000 ? 'together' : 'quiet'; };
 
 function setStatus(id, status) {
   const t = reg.tabs[id];
@@ -123,20 +129,20 @@ function control(body) {
       return { ok: true };
     }
     case 'working': {
-      reg.agents[agent] = { state: 'working' };
+      Object.assign(agentRec(agent), { state: 'working', active: Date.now() });
       if (tab) { const err = claimTab(tab); if (err) return err; touch(tab); }
       for (const [id, t] of mine) if (t.touched) setStatus(id, 'working');
       save();
       return { ok: true };
     }
     case 'done': {
-      reg.agents[agent] = { state: 'done' };
+      agentRec(agent).state = 'done';
       for (const [id, t] of mine) if (t.touched) setStatus(id, 'done');
       save();
       return { ok: true };
     }
     case 'turn-end': {
-      reg.agents[agent] = { state: 'idle' };
+      agentRec(agent).state = 'idle';
       for (const [id, t] of mine) {
         if (t.touched) setStatus(id, 'paused');
         else if (t.status === 'paused') setStatus(id, null); // a full turn with no browser work: clear
@@ -182,6 +188,47 @@ function control(body) {
       for (const t of Object.values(reg.tabs)) if (t.agent === UNOWNED && now - (t.created || 0) < 60000) { t.agent = agent; n++; }
       save();
       return { ok: true, adopted: n };
+    }
+    case 'focus': { // set how this agent treats the user's attention (see focusMode); also the per-task bot-check grant
+      const r = agentRec(agent);
+      if (body.mode !== undefined) {
+        if (!['quiet', 'together'].includes(body.mode)) return { ok: false, error: 'mode must be quiet or together' };
+        r.focus = body.mode; r.active = Date.now();
+      }
+      if (body.captcha !== undefined) {
+        if (!['allow', 'ask'].includes(body.captcha)) return { ok: false, error: 'captcha must be allow or ask' };
+        if (body.captcha === 'allow' && FOCUS.captcha === 'never') return { ok: false, error: 'the user has set focus.captcha to never' };
+        r.captcha = body.captcha === 'allow' ? 'allow' : undefined;
+      }
+      save();
+      return { ok: true, mode: focusMode(agent), captcha: FOCUS.captcha === 'allow' || r.captcha === 'allow' ? 'allow' : (FOCUS.captcha === 'never' ? 'never' : 'ask') };
+    }
+    case 'surface': { // show the user one of the agent's tabs: switch to it, and with window:true also raise Brave
+      const t = reg.tabs[tab];
+      if (!t || t.agent !== agent) return { ok: false, error: 'tab is not yours' };
+      const r = agentRec(agent);
+      const captchaOk = FOCUS.captcha === 'allow' || (FOCUS.captcha !== 'never' && r.captcha === 'allow');
+      if (focusMode(agent) !== 'together' && !(body.reason === 'captcha' && captchaOk)) {
+        return { ok: false, error: body.reason === 'captcha'
+          ? (FOCUS.captcha === 'never' ? 'the user never wants focus taken for a bot check: tell them in chat and name the tab'
+            : 'not allowed yet: ask the user whether you may bring the tab forward for a bot check; if yes, run `tab-status focus --captcha allow` for this task')
+          : 'you are in quiet mode: tell the user in chat and name the tab. Taking focus is for work you do together (`tab-status focus --mode together`)' };
+      }
+      const want = !!body.window && body.window !== 'false';
+      return ext.ask({ op: 'activate', tab, window: want }).then((did) => {
+        if (did && did.ok) return { ok: true, tab: 'shown', window: want ? 'raised' : 'left alone' };
+        keeper.send('Target.activateTarget', { targetId: tab }); // no extension: the browser's own call (switches the tab; may raise the window)
+        return { ok: true, tab: 'shown', window: 'may have been raised (tab-group extension not running)' };
+      });
+    }
+    case 'where': { // where is the user looking? Never tells an agent anything about tabs that are not its own.
+      return ext.ask({ op: 'where' }).then((w) => {
+        if (!w || !Array.isArray(w.windows)) return { ok: false, error: w && w.error ? `the tab-group extension failed: ${w.error}` : 'unknown: the tab-group extension is not running' };
+        const label = (id) => { const t = id && reg.tabs[id]; return !t ? "the user's own tab" : (t.agent === agent ? `your tab ${id}` : "another agent's tab"); };
+        const front = w.windows.find((x) => x.focused);
+        return { ok: true, mode: focusMode(agent), brave_is_focused: !!front,
+          front_tab: front ? label(front.active) : (w.windows.length ? `${label(w.windows[0].active)} (Brave is not the focused app)` : 'no browser window') };
+      });
     }
     default: return { ok: false, error: `unknown cmd ${cmd}` };
   }
@@ -288,8 +335,8 @@ const keeper = {
     if (!parent || !/^(https?:|about:blank)/i.test(url || '')) return;
     if (FORBIDDEN.test(url)) return wallLog({ layer: 2, action: 'refused-popup', agent: parent.agent });
     if (String(parent.space || '').startsWith('container:')) return this.openIn(parentId, url);
-    const r = await this.send('Target.createTarget', { url, background: true });
-    const id = r && r.result && r.result.targetId;
+    const made = await ext.ask({ op: 'create', url, active: focusMode(parent.agent) === 'together', agent: parent.agent });
+    const id = (made && made.target) || (((await this.send('Target.createTarget', { url, background: true })) || {}).result || {}).targetId;
     if (id && !reg.tabs[id]) { reg.tabs[id] = { agent: parent.agent, space: parent.space, status: 'working', touched: true, created: Date.now() }; save(); this.attach(id); }
   },
   claimExpected(info) { // a background tab the relay opened by ctrl-click (no openerId): match by URL
@@ -430,10 +477,32 @@ const trusted = (req) => HOST_OK.has(String(req.headers.host || '').toLowerCase(
 const GROUPS = CFG.groups || {};
 const EXT_ORIGINS = new Set((Array.isArray(GROUPS.extension_ids) ? GROUPS.extension_ids : []).map((id) => `chrome-extension://${id}`));
 const liveAttach = new Map(); // targetId -> Set(connection ids) with a live session on it
+// Things only the extension can do cleanly: open a tab truly in the background (Brave on Linux activates a tab made with
+// Target.createTarget even when asked not to), switch to a tab WITHOUT raising the window, raise the window, and say
+// which tab is in front. The relay queues a request; the extension picks it up on its long-poll and reports back.
+const ext = {
+  seen: 0, todo: [], pending: new Map(), seq: 0,
+  alive() { return GROUPS.enabled !== false && Date.now() - this.seen < 30000; },
+  ask(op, timeout = 4000) { // resolves to the extension's result, or null when it is not running / did not answer
+    if (!this.alive()) return Promise.resolve(null);
+    const id = ++this.seq;
+    this.todo.push({ id, ...op });
+    rev++; for (const w of [...waiters]) w();
+    return new Promise((res) => {
+      this.pending.set(id, res);
+      setTimeout(() => { if (this.pending.delete(id)) { this.todo = this.todo.filter((t) => t.id !== id); res(null); } }, timeout);
+    });
+  },
+  done(id, result) {
+    this.todo = this.todo.filter((t) => t.id !== id);
+    const f = this.pending.get(id);
+    if (f) { this.pending.delete(id); f(result || {}); }
+  },
+};
 function extState() {
   const tabs = {};
   for (const [id, t] of Object.entries(reg.tabs)) tabs[id] = { agent: t.agent, space: t.space, status: t.status };
-  return { rev, enabled: GROUPS.enabled !== false, tabs, agents: reg.agents, colors: GROUPS.colors || {} };
+  return { rev, enabled: GROUPS.enabled !== false, tabs, agents: reg.agents, colors: GROUPS.colors || {}, todo: ext.todo };
 }
 function extEvent(body) { // the user moved a tab into / out of an agent's tab group
   const { type, tab, agent } = body || {};
@@ -442,6 +511,7 @@ function extEvent(body) { // the user moved a tab into / out of an agent's tab g
     return control({ cmd: 'claim', agent, tab });
   }
   if (type === 'left') return control({ cmd: 'release', agent, tab });
+  if (type === 'did') { ext.done(body.id, body.result); return { ok: true }; }
   return { ok: false, error: 'unknown event' };
 }
 const server = http.createServer((req, res) => {
@@ -455,6 +525,7 @@ const server = http.createServer((req, res) => {
     if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
     const u = new URL(req.url, 'http://x');
     if (req.method === 'GET' && u.pathname === '/_ext/state') {
+      if (u.searchParams.get('from') === 'ext') ext.seen = Date.now(); // the extension's own long-poll (a plain GET carries no Origin)
       if (u.searchParams.get('wait') !== '1' || Number(u.searchParams.get('rev')) !== rev) return reply(200, extState());
       let done = false;
       const finish = () => { if (done) return; done = true; waiters.delete(finish); clearTimeout(timer); reply(200, extState()); };
@@ -626,6 +697,13 @@ server.on('upgrade', (req, socket, head) => {
           }
           // Focus: never activate. agent-browser sends these to wake a frozen (Memory Saver) tab; wake it with
           // Page.setWebLifecycleState instead, which unfreezes without raising or switching anything.
+          const actTab = msg.method === 'Page.bringToFront' ? (msg.sessionId ? sessionTarget.get(msg.sessionId) : pageConn)
+            : (msg.method === 'Target.activateTarget' ? (msg.params || {}).targetId : null);
+          if (actTab && reg.tabs[actTab] && focusMode(reg.tabs[actTab].agent) === 'together' && ext.alive()) {
+            ext.ask({ op: 'activate', tab: actTab, window: false }); // working together: the user's view follows, inside Brave only
+            keeper.wake(actTab);
+            return reply({ result: {} });
+          }
           if (msg.method === 'Page.bringToFront') {
             msg.method = 'Page.setWebLifecycleState'; msg.params = { state: 'active' };
             out = JSON.stringify(msg);
@@ -637,8 +715,23 @@ server.on('upgrade', (req, socket, head) => {
           if (msg.method === 'Target.createTarget') {
             msg.params = { ...(msg.params || {}), background: true };
             delete msg.params.newWindow;
-            createReq.set(msg.id, { url: String(msg.params.url || 'about:blank'), at: Date.now() });
-            out = JSON.stringify(msg);
+            const url = String(msg.params.url || 'about:blank');
+            const viaCdp = () => { // the browser's own way: fine where it honours background:true
+              createReq.set(msg.id, { url, at: Date.now() });
+              const raw = JSON.stringify(msg);
+              if (upstream.readyState === 1) upstream.send(raw); else queue.push([raw, false]);
+            };
+            if (!ext.alive()) { log('createTarget: extension not connected, using the browser call'); viaCdp(); return; }
+            const owner = connAgent.name || UNOWNED;
+            ext.ask({ op: 'create', url, active: focusMode(connAgent.name) === 'together', agent: owner }).then(async (made) => {
+              const id = made && made.target;
+              if (!id) return viaCdp();
+              if (!reg.tabs[id]) { reg.tabs[id] = { agent: owner, space: 'relay', status: 'working', touched: true, created: Date.now(), via: 'extension' }; save(); keeper.attach(id); }
+              const info = await keeper.send('Target.getTargetInfo', { targetId: id }); // the client missed the "created" event (the tab was not its own yet)
+              if (client.readyState === 1 && info && info.result) client.send(JSON.stringify({ method: 'Target.targetCreated', params: { targetInfo: info.result.targetInfo } }));
+              reply({ result: { targetId: id } });
+            });
+            return;
           }
           if (msg.method === 'Target.attachToTarget' && msg.params && msg.params.targetId) attachReq.set(msg.id, msg.params.targetId);
           if (msg.method === 'Target.getTargets') getReq.add(msg.id);
